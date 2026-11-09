@@ -16,8 +16,13 @@ export function getFirestoreDb(): Firestore {
     if (process.env.FIREBASE_SERVICE_ACCOUNT_KEY) {
       try {
         const raw = process.env.FIREBASE_SERVICE_ACCOUNT_KEY.trim();
-        const jsonStr = raw.startsWith('{') ? raw : Buffer.from(raw, 'base64').toString('utf8');
+        const jsonStr = raw.startsWith('{')
+          ? raw
+          : Buffer.from(raw.replace(/\s+/g, ''), 'base64').toString('utf8');
         const serviceAccount = JSON.parse(jsonStr);
+        if (serviceAccount.private_key) {
+          serviceAccount.private_key = serviceAccount.private_key.replace(/\\n/g, '\n');
+        }
         credentialCert = cert(serviceAccount);
       } catch (err) {
         console.warn('Failed to parse FIREBASE_SERVICE_ACCOUNT_KEY env var:', err);
@@ -30,6 +35,9 @@ export function getFirestoreDb(): Firestore {
       if (fs.existsSync(localKeyPath)) {
         try {
           const serviceAccount = JSON.parse(fs.readFileSync(localKeyPath, 'utf8'));
+          if (serviceAccount.private_key) {
+            serviceAccount.private_key = serviceAccount.private_key.replace(/\\n/g, '\n');
+          }
           credentialCert = cert(serviceAccount);
         } catch (err) {
           console.warn('Failed to load local firebase-service-account.json:', err);
@@ -37,10 +45,14 @@ export function getFirestoreDb(): Firestore {
       }
     }
 
-    app = initializeApp({
-      credential: credentialCert || undefined,
+    const appOptions: any = {
       projectId: 'creative-associate-llp-9d611',
-    });
+    };
+    if (credentialCert) {
+      appOptions.credential = credentialCert;
+    }
+
+    app = initializeApp(appOptions);
   } else {
     app = getApps()[0];
   }
