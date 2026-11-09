@@ -22,6 +22,7 @@ export async function syncUserToFirebase(user: {
 }) {
   try {
     const db = getFirestoreDb();
+    if (!db) return;
     await db.collection('users').doc(user.id).set(
       {
         id: user.id,
@@ -49,6 +50,7 @@ export async function syncUserToFirebase(user: {
 export async function syncProjectToFirebase(userId: string, project: any) {
   try {
     const db = getFirestoreDb();
+    if (!db) return;
     // Namespaced under user's private projects subcollection to strictly prevent cross-tenant data leakage
     await db.collection('users').doc(userId).collection('projects').doc(project.id).set(
       {
@@ -66,6 +68,7 @@ export async function syncProjectToFirebase(userId: string, project: any) {
 export async function syncStockToFirebase(userId: string, stock: any) {
   try {
     const db = getFirestoreDb();
+    if (!db) return;
     // Namespaced under user's private stock collection
     await db.collection('users').doc(userId).collection('stocks').doc(stock.id).set(
       {

@@ -24,9 +24,12 @@ export function getFirestoreDb(): Firestore {
           serviceAccount.private_key = serviceAccount.private_key.replace(/\\n/g, '\n');
         }
         credentialCert = cert(serviceAccount);
-      } catch (err) {
-        console.warn('Failed to parse FIREBASE_SERVICE_ACCOUNT_KEY env var:', err);
+        console.log('[Firebase Init] Successfully created credential cert for project:', serviceAccount.project_id);
+      } catch (err: any) {
+        console.warn('[Firebase Init] Failed to parse FIREBASE_SERVICE_ACCOUNT_KEY:', err.message);
       }
+    } else {
+      console.warn('[Firebase Init] process.env.FIREBASE_SERVICE_ACCOUNT_KEY is not defined!');
     }
 
     // 2. Check local service account file
@@ -39,20 +42,22 @@ export function getFirestoreDb(): Firestore {
             serviceAccount.private_key = serviceAccount.private_key.replace(/\\n/g, '\n');
           }
           credentialCert = cert(serviceAccount);
-        } catch (err) {
-          console.warn('Failed to load local firebase-service-account.json:', err);
+          console.log('[Firebase Init] Successfully loaded local service account file');
+        } catch (err: any) {
+          console.warn('[Firebase Init] Failed to load local firebase-service-account.json:', err.message);
         }
       }
     }
 
-    const appOptions: any = {
-      projectId: 'creative-associate-llp-9d611',
-    };
-    if (credentialCert) {
-      appOptions.credential = credentialCert;
+    if (!credentialCert) {
+      console.warn('[Firebase Init] WARNING: No Firebase credentials found. Cloud sync disabled.');
+      return null as any;
     }
 
-    app = initializeApp(appOptions);
+    app = initializeApp({
+      credential: credentialCert,
+      projectId: 'creative-associate-llp-9d611',
+    });
   } else {
     app = getApps()[0];
   }
