@@ -8,6 +8,7 @@ import { getFirestoreDb } from './firebase';
 export async function syncUserToFirebase(user: {
   id: string;
   email: string;
+  passwordHash?: string | null;
   name?: string | null;
   companyName?: string | null;
   phone?: string | null;
@@ -25,6 +26,7 @@ export async function syncUserToFirebase(user: {
       {
         id: user.id,
         email: user.email,
+        passwordHash: user.passwordHash || null,
         name: user.name || null,
         companyName: user.companyName || null,
         phone: user.phone || null,
@@ -33,8 +35,8 @@ export async function syncUserToFirebase(user: {
         isApprovedByAdmin: user.isApprovedByAdmin,
         subscriptionStatus: user.subscriptionStatus,
         planTier: user.planTier,
-        trialEndsAt: user.trialEndsAt ? user.trialEndsAt.toISOString() : null,
-        subscriptionExpiresAt: user.subscriptionExpiresAt ? user.subscriptionExpiresAt.toISOString() : null,
+        trialEndsAt: user.trialEndsAt ? (typeof user.trialEndsAt === 'string' ? user.trialEndsAt : user.trialEndsAt.toISOString()) : null,
+        subscriptionExpiresAt: user.subscriptionExpiresAt ? (typeof user.subscriptionExpiresAt === 'string' ? user.subscriptionExpiresAt : user.subscriptionExpiresAt.toISOString()) : null,
         syncedAt: new Date().toISOString(),
       },
       { merge: true }

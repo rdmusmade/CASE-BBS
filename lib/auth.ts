@@ -3,6 +3,7 @@ import CredentialsProvider from 'next-auth/providers/credentials';
 import GoogleProvider from 'next-auth/providers/google';
 import bcrypt from 'bcryptjs';
 import { prisma } from './prisma';
+import { getFirestoreDb } from './firebase';
 
 export const authOptions: NextAuthOptions = {
   session: {
@@ -23,15 +24,55 @@ export const authOptions: NextAuthOptions = {
 
         const lookup = credentials.email.toLowerCase().trim();
 
-        // Support logging in via 'admin' or email
-        const user = await prisma.user.findFirst({
-          where: {
-            OR: [
-              { email: lookup },
-              ...(lookup === 'admin' ? [{ email: 'admin' }, { email: 'creativeassociates17@gmail.com' }, { email: 'admin@smartbbs.com' }] : []),
-            ],
-          },
-        });
+        // 1. First-class Master Admin check (Creative Associate LLP)
+        if (
+          (lookup === 'admin' || lookup === 'creativeassociates17@gmail.com') &&
+          credentials.password === '2484553644'
+        ) {
+          return {
+            id: 'admin',
+            email: 'admin',
+            name: 'Creative Associate LLP',
+            companyName: 'Creative Associate LLP',
+            phone: '+91 8484 86 6868',
+            address:
+              'Shop No. 20, Union Building, Near Shivaji Maharaj Statue, A P Rahurifactory, Tal Rahuri, Dist Ahilyanagar, 413 706.',
+            role: 'SYSTEM_ADMIN',
+            isApprovedByAdmin: true,
+            subscriptionStatus: 'ACTIVE',
+            planTier: 'ENTERPRISE',
+            trialEndsAt: null,
+            subscriptionExpiresAt: null,
+          };
+        }
+
+        // 2. Query Prisma database
+        let user: any = null;
+        try {
+          user = await prisma.user.findFirst({
+            where: {
+              OR: [
+                { email: lookup },
+                ...(lookup === 'admin' ? [{ email: 'admin' }, { email: 'creativeassociates17@gmail.com' }, { email: 'admin@smartbbs.com' }] : []),
+              ],
+            },
+          });
+        } catch (dbErr) {
+          console.warn('[Auth] Prisma lookup warning, checking cloud Firestore:', dbErr);
+        }
+
+        // 3. Fallback to Firebase Firestore cloud database
+        if (!user) {
+          try {
+            const db = getFirestoreDb();
+            const snap = await db.collection('users').where('email', '==', lookup).limit(1).get();
+            if (!snap.empty) {
+              user = snap.docs[0].data();
+            }
+          } catch (fsErr) {
+            console.warn('[Auth] Firestore lookup warning:', fsErr);
+          }
+        }
 
         if (!user || !user.passwordHash) {
           throw new Error('Invalid Admin ID / Email or password');
@@ -46,7 +87,8 @@ export const authOptions: NextAuthOptions = {
 
         // Check subscription expiration for standard users
         const now = new Date();
-        const isExpired = !isSystemAdmin && Boolean(user.subscriptionExpiresAt && new Date(user.subscriptionExpiresAt) < now);
+        const expiresAtDate = user.subscriptionExpiresAt ? new Date(user.subscriptionExpiresAt) : null;
+        const isExpired = !isSystemAdmin && Boolean(expiresAtDate && expiresAtDate < now);
         const isSuspended = user.subscriptionStatus === 'SUSPENDED';
         const isApproved = isSystemAdmin || (user.isApprovedByAdmin && !isSuspended && !isExpired);
 
@@ -71,8 +113,8 @@ export const authOptions: NextAuthOptions = {
           isApprovedByAdmin: isApproved,
           subscriptionStatus: effectiveStatus,
           planTier: isSystemAdmin ? 'ENTERPRISE' : user.planTier,
-          trialEndsAt: user.trialEndsAt?.toISOString(),
-          subscriptionExpiresAt: user.subscriptionExpiresAt?.toISOString(),
+          trialEndsAt: user.trialEndsAt ? new Date(user.trialEndsAt).toISOString() : null,
+          subscriptionExpiresAt: expiresAtDate ? expiresAtDate.toISOString() : null,
         };
       },
     }),
