@@ -32,7 +32,26 @@ export function getFirestoreDb(): Firestore {
       console.warn('[Firebase Init] process.env.FIREBASE_SERVICE_ACCOUNT_KEY is not defined!');
     }
 
-    // 2. Check local service account file
+    // 2. Check bundled serviceAccount.b64 file
+    if (!credentialCert) {
+      const b64Path = path.join(process.cwd(), 'lib', 'serviceAccount.b64');
+      if (fs.existsSync(b64Path)) {
+        try {
+          const raw = fs.readFileSync(b64Path, 'utf8').trim();
+          const jsonStr = Buffer.from(raw.replace(/\s+/g, ''), 'base64').toString('utf8');
+          const serviceAccount = JSON.parse(jsonStr);
+          if (serviceAccount.private_key) {
+            serviceAccount.private_key = serviceAccount.private_key.replace(/\\n/g, '\n');
+          }
+          credentialCert = cert(serviceAccount);
+          console.log('[Firebase Init] Successfully loaded bundled serviceAccount.b64');
+        } catch (err: any) {
+          console.warn('[Firebase Init] Failed to load bundled serviceAccount.b64:', err.message);
+        }
+      }
+    }
+
+    // 3. Check local service account JSON file
     if (!credentialCert) {
       const localKeyPath = path.join(process.cwd(), 'firebase-service-account.json');
       if (fs.existsSync(localKeyPath)) {
