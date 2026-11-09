@@ -1,0 +1,366 @@
+rules_version = '2';
+
+// ============================================================================
+// Assumed Data Model & Architecture: CASE - BBS (Civil Structural Engineering SaaS)
+// ============================================================================
+//
+// 1. Root Collection: /users/{userId}
+//    Document ID: {userId} (Must match request.auth.uid for standard users)
+//    Description: User identity, company profile, RBAC role, approval and subscription status.
+//    Fields:
+//      - id: string (required, 1-128 chars, immutable)
+//      - email: string (required, valid email, max 150 chars, immutable by non-admin)
+//      - name: string | null (optional, max 120 chars)
+//      - companyName: string | null (optional, max 150 chars)
+//      - phone: string | null (optional, max 30 chars)
+//      - address: string | null (optional, max 500 chars)
+//      - role: string (required, 'STANDARD_USER' | 'SYSTEM_ADMIN', immutable by non-admin)
+//      - isApprovedByAdmin: bool (required, immutable by non-admin)
+//      - subscriptionStatus: string (required, 'ACTIVE'|'TRIAL'|'PENDING'|'EXPIRED'|'CANCELLED'|'SUSPENDED', immutable by non-admin)
+//      - planTier: string (required, 'FREE_TRIAL'|'MONTHLY_PRO'|'YEARLY_PRO'|'ENTERPRISE', immutable by non-admin)
+//      - trialStartedAt: timestamp | string | null (optional, max 40 chars, immutable by non-admin)
+//      - trialEndsAt: timestamp | string | null (optional, max 40 chars, immutable by non-admin)
+//      - subscriptionExpiresAt: timestamp | string | null (optional, max 40 chars, immutable by non-admin)
+//      - createdAt: timestamp | string | null (optional, max 40 chars)
+//      - updatedAt: timestamp | string | null (optional, max 40 chars)
+//      - syncedAt: timestamp | string | null (optional, max 40 chars)
+//
+// 2. User Subcollection: /users/{userId}/projects/{projectId}
+//    Document ID: {projectId} (UUID / CUID / slug)
+//    Description: Structural engineering projects, RC members, and Bar Bending Schedules.
+//    Fields:
+//      - id: string (required, 1-128 chars, immutable)
+//      - userId: string (required, must match parent userId and auth UID, immutable)
+//      - projectName: string (required, 1-200 chars)
+//      - clientName: string | null (optional, max 200 chars)
+//      - contractorName: string | null (optional, max 200 chars)
+//      - technicalAgency: string | null (optional, max 200 chars)
+//      - authorityStandard: string | null (optional, max 100 chars, e.g., 'MAHARASHTRA_PWD'|'CPWD'|'IS_STANDARD')
+//      - siteLocation: string | null (optional, max 300 chars)
+//      - rccGrade: string | null (optional, max 50 chars, e.g., 'M25')
+//      - rebarGrade: string | null (optional, max 50 chars, e.g., 'Fe500D')
+//      - notes: string | null (optional, max 5000 chars)
+//      - status: string | null (optional, max 50 chars)
+//      - membersCount: number | null (optional, 0-100000)
+//      - members: list | null (optional, max 1000 items)
+//      - cuttingRuns: list | null (optional, max 500 items)
+//      - auditLogs: list | null (optional, max 1000 items)
+//      - createdDate: timestamp | string | null (optional, max 40 chars)
+//      - updatedAt: timestamp | string | null (optional, max 40 chars)
+//      - syncedAt: timestamp | string | null (optional, max 40 chars)
+//
+// 3. User Subcollection: /users/{userId}/stocks/{stockId}
+//    Document ID: {stockId} (UUID / CUID)
+//    Description: Rebar steel stock inventory transactions (procurement/issues).
+//    Fields:
+//      - id: string (required, 1-128 chars, immutable)
+//      - userId: string (required, must match parent userId, immutable)
+//      - transactionType: string (required, 'PROCUREMENT' | 'ISSUE')
+//      - dia: number (required, valid rebar diameter: 6, 8, 10, 12, 16, 20, 25, 28, 32, 36, 40 mm)
+//      - quantityKg: number (required, positive, max 100,000,000 kg)
+//      - steelGrade: string (required, 1-50 chars, e.g., 'Fe500D')
+//      - date: timestamp | string | null (optional, max 40 chars)
+//      - supplier: string | null (optional, max 200 chars)
+//      - invoiceNo: string | null (optional, max 100 chars)
+//      - projectId: string | null (optional, max 128 chars)
+//      - remarks: string | null (optional, max 1000 chars)
+//      - createdAt: timestamp | string | null (optional, max 40 chars)
+//      - updatedAt: timestamp | string | null (optional, max 40 chars)
+//      - syncedAt: timestamp | string | null (optional, max 40 chars)
+//
+// 4. Root Collection: /system_status/{docId}
+//    Document ID: {docId} (e.g., 'current', 'health')
+//    Description: Public application health, maintenance status, and service announcements.
+//    Fields:
+//      - status: string (required, 1-50 chars, e.g., 'OPERATIONAL', 'MAINTENANCE')
+//      - message: string | null (optional, max 500 chars)
+//      - version: string | null (optional, max 50 chars)
+//      - maintenanceWindow: string | null (optional, max 100 chars)
+//      - updatedAt: timestamp | string | null (optional, max 40 chars)
+// ============================================================================
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ========================================================================
+    // Helper Functions
+    // ========================================================================
+
+    // Authentication verification
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    // Tenant / Owner verification based on user path
+    function isOwner(userId) {
+      return isAuthenticated() && request.auth.uid == userId;
+    }
+
+    // System Administrator verification from trusted claims or verified bootstrap email
+    function isAdmin() {
+      return isAuthenticated() && (
+        ('role' in request.auth.token && request.auth.token.role == 'SYSTEM_ADMIN') ||
+        ('admin' in request.auth.token && request.auth.token.admin == true) ||
+        ('email' in request.auth.token &&
+         request.auth.token.email in ['admin@smartbbs.com', 'creativeassociates17@gmail.com'] &&
+         ('email_verified' in request.auth.token && request.auth.token.email_verified == true))
+      );
+    }
+
+    // Validate that immutable fields were not altered during update
+    function areImmutableFieldsUnchanged(fields) {
+      return !request.resource.data.diff(resource.data).affectedKeys().hasAny(fields);
+    }
+
+    // RFC-compliant email validation
+    function isValidEmail(email) {
+      return email is string &&
+        email.matches('^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,}$');
+    }
+
+    // Optional string validation helper with length bounds to prevent DoS attacks
+    function isValidOptionalString(data, field, minLen, maxLen) {
+      return !(field in data) ||
+             data[field] == null ||
+             (data[field] is string && data[field].size() >= minLen && data[field].size() <= maxLen);
+    }
+
+    // Optional date / timestamp validation helper
+    function isValidOptionalDate(data, field) {
+      return !(field in data) ||
+             data[field] == null ||
+             data[field] is timestamp ||
+             (data[field] is string && data[field].size() <= 40);
+    }
+
+    // Optional numeric range validation helper
+    function isValidOptionalNumber(data, field, minVal, maxVal) {
+      return !(field in data) ||
+             data[field] == null ||
+             (data[field] is number && data[field] >= minVal && data[field] <= maxVal);
+    }
+
+    // Optional array / list size limit helper
+    function isValidOptionalList(data, field, maxSize) {
+      return !(field in data) ||
+             data[field] == null ||
+             (data[field] is list && data[field].size() <= maxSize);
+    }
+
+    // ========================================================================
+    // Domain Validator Functions (Enforced on BOTH Create and Update)
+    // ========================================================================
+
+    // User Profile Validator
+    function isValidUser(data) {
+      let allowedKeys = [
+        'id', 'email', 'name', 'companyName', 'phone', 'address',
+        'role', 'isApprovedByAdmin', 'subscriptionStatus', 'planTier',
+        'trialStartedAt', 'trialEndsAt', 'subscriptionExpiresAt',
+        'createdAt', 'updatedAt', 'syncedAt'
+      ];
+      return data.keys().hasOnly(allowedKeys) &&
+             data.id is string && data.id.size() >= 1 && data.id.size() <= 128 &&
+             data.email is string && isValidEmail(data.email) && data.email.size() <= 150 &&
+             data.role in ['STANDARD_USER', 'SYSTEM_ADMIN'] &&
+             data.isApprovedByAdmin is bool &&
+             data.subscriptionStatus in ['ACTIVE', 'TRIAL', 'PENDING', 'EXPIRED', 'CANCELLED', 'SUSPENDED'] &&
+             data.planTier in ['FREE_TRIAL', 'MONTHLY_PRO', 'YEARLY_PRO', 'ENTERPRISE'] &&
+             isValidOptionalString(data, 'name', 0, 120) &&
+             isValidOptionalString(data, 'companyName', 0, 150) &&
+             isValidOptionalString(data, 'phone', 0, 30) &&
+             isValidOptionalString(data, 'address', 0, 500) &&
+             isValidOptionalDate(data, 'trialStartedAt') &&
+             isValidOptionalDate(data, 'trialEndsAt') &&
+             isValidOptionalDate(data, 'subscriptionExpiresAt') &&
+             isValidOptionalDate(data, 'createdAt') &&
+             isValidOptionalDate(data, 'updatedAt') &&
+             isValidOptionalDate(data, 'syncedAt');
+    }
+
+    // Civil Structural Project Validator
+    function isValidProject(data) {
+      let allowedKeys = [
+        'id', 'userId', 'projectName', 'clientName', 'contractorName',
+        'technicalAgency', 'authorityStandard', 'siteLocation', 'rccGrade',
+        'rebarGrade', 'notes', 'status', 'createdDate', 'updatedAt',
+        'membersCount', 'members', 'cuttingRuns', 'auditLogs', 'syncedAt'
+      ];
+      return data.keys().hasOnly(allowedKeys) &&
+             data.id is string && data.id.size() >= 1 && data.id.size() <= 128 &&
+             data.userId is string && data.userId.size() >= 1 && data.userId.size() <= 128 &&
+             data.projectName is string && data.projectName.size() >= 1 && data.projectName.size() <= 200 &&
+             isValidOptionalString(data, 'clientName', 0, 200) &&
+             isValidOptionalString(data, 'contractorName', 0, 200) &&
+             isValidOptionalString(data, 'technicalAgency', 0, 200) &&
+             isValidOptionalString(data, 'authorityStandard', 0, 100) &&
+             isValidOptionalString(data, 'siteLocation', 0, 300) &&
+             isValidOptionalString(data, 'rccGrade', 0, 50) &&
+             isValidOptionalString(data, 'rebarGrade', 0, 50) &&
+             isValidOptionalString(data, 'notes', 0, 5000) &&
+             isValidOptionalString(data, 'status', 0, 50) &&
+             isValidOptionalNumber(data, 'membersCount', 0, 100000) &&
+             isValidOptionalList(data, 'members', 1000) &&
+             isValidOptionalList(data, 'cuttingRuns', 500) &&
+             isValidOptionalList(data, 'auditLogs', 1000) &&
+             isValidOptionalDate(data, 'createdDate') &&
+             isValidOptionalDate(data, 'updatedAt') &&
+             isValidOptionalDate(data, 'syncedAt');
+    }
+
+    // Steel Inventory Stock Transaction Validator
+    function isValidStock(data) {
+      let allowedKeys = [
+        'id', 'userId', 'transactionType', 'dia', 'quantityKg', 'steelGrade',
+        'date', 'supplier', 'invoiceNo', 'projectId', 'remarks',
+        'createdAt', 'updatedAt', 'syncedAt'
+      ];
+      return data.keys().hasOnly(allowedKeys) &&
+             data.id is string && data.id.size() >= 1 && data.id.size() <= 128 &&
+             data.userId is string && data.userId.size() >= 1 && data.userId.size() <= 128 &&
+             data.transactionType in ['PROCUREMENT', 'ISSUE'] &&
+             data.dia is number && data.dia in [6, 8, 10, 12, 16, 20, 25, 28, 32, 36, 40] &&
+             data.quantityKg is number && data.quantityKg > 0 && data.quantityKg <= 100000000 &&
+             data.steelGrade is string && data.steelGrade.size() >= 1 && data.steelGrade.size() <= 50 &&
+             isValidOptionalString(data, 'supplier', 0, 200) &&
+             isValidOptionalString(data, 'invoiceNo', 0, 100) &&
+             isValidOptionalString(data, 'projectId', 0, 128) &&
+             isValidOptionalString(data, 'remarks', 0, 1000) &&
+             isValidOptionalDate(data, 'date') &&
+             isValidOptionalDate(data, 'createdAt') &&
+             isValidOptionalDate(data, 'updatedAt') &&
+             isValidOptionalDate(data, 'syncedAt');
+    }
+
+    // System Health Status Validator
+    function isValidSystemStatus(data) {
+      let allowedKeys = ['status', 'message', 'version', 'maintenanceWindow', 'updatedAt'];
+      return data.keys().hasOnly(allowedKeys) &&
+             data.status is string && data.status.size() >= 1 && data.status.size() <= 50 &&
+             isValidOptionalString(data, 'message', 0, 500) &&
+             isValidOptionalString(data, 'version', 0, 50) &&
+             isValidOptionalString(data, 'maintenanceWindow', 0, 100) &&
+             isValidOptionalDate(data, 'updatedAt');
+    }
+
+    // ========================================================================
+    // Collection Rules
+    // ========================================================================
+
+    // 1. Users Collection
+    // Strict multi-tenant isolation: Users can only read their own profile. PII is never exposed to other tenants.
+    match /users/{userId} {
+      allow read: if isOwner(userId) || isAdmin();
+
+      // Creation: Standard users can only create their own document with non-elevated permissions.
+      // System Administrators can provision/bootstrap user documents with any valid role.
+      allow create: if isAuthenticated() &&
+                       isValidUser(request.resource.data) &&
+                       request.resource.data.id == userId &&
+                       (
+                         (isOwner(userId) &&
+                          request.resource.data.role == 'STANDARD_USER' &&
+                          request.resource.data.isApprovedByAdmin == false &&
+                          request.resource.data.subscriptionStatus in ['PENDING', 'TRIAL']) ||
+                         isAdmin()
+                       );
+
+      // Updates: Standard users can only edit their own contact details (cannot escalate roles or approvals).
+      // Administrators can update any valid user field (approvals, subscription tiers, roles).
+      allow update: if isAuthenticated() &&
+                       isValidUser(request.resource.data) &&
+                       (
+                         (isOwner(userId) &&
+                          areImmutableFieldsUnchanged([
+                            'id', 'email', 'role', 'isApprovedByAdmin',
+                            'subscriptionStatus', 'planTier', 'trialStartedAt',
+                            'trialEndsAt', 'subscriptionExpiresAt'
+                          ])) ||
+                         isAdmin()
+                       );
+
+      // Deletions: Restricted exclusively to System Administrators.
+      allow delete: if isAdmin();
+
+      // ----------------------------------------------------------------------
+      // 2. Projects Subcollection (/users/{userId}/projects/{projectId})
+      // Civil engineering projects strictly isolated per user tenant.
+      // ----------------------------------------------------------------------
+      match /projects/{projectId} {
+        allow read: if isOwner(userId) || isAdmin();
+
+        allow create: if (isOwner(userId) || isAdmin()) &&
+                         isValidProject(request.resource.data) &&
+                         request.resource.data.userId == userId &&
+                         request.resource.data.id == projectId;
+
+        allow update: if (isOwner(userId) || isAdmin()) &&
+                         isValidProject(request.resource.data) &&
+                         areImmutableFieldsUnchanged(['id', 'userId']);
+
+        allow delete: if isOwner(userId) || isAdmin();
+
+        // Subcollection containment (e.g., cutting runs, audit logs)
+        match /{subcollection}/{docId} {
+          allow read, write: if isOwner(userId) || isAdmin();
+        }
+      }
+
+      // ----------------------------------------------------------------------
+      // 3. Stocks Subcollection (/users/{userId}/stocks/{stockId})
+      // Steel inventory transactions strictly isolated per user tenant.
+      // ----------------------------------------------------------------------
+      match /stocks/{stockId} {
+        allow read: if isOwner(userId) || isAdmin();
+
+        allow create: if (isOwner(userId) || isAdmin()) &&
+                         isValidStock(request.resource.data) &&
+                         request.resource.data.userId == userId &&
+                         request.resource.data.id == stockId;
+
+        allow update: if (isOwner(userId) || isAdmin()) &&
+                         isValidStock(request.resource.data) &&
+                         areImmutableFieldsUnchanged(['id', 'userId']);
+
+        allow delete: if isOwner(userId) || isAdmin();
+
+        // Subcollection containment
+        match /{subcollection}/{docId} {
+          allow read, write: if isOwner(userId) || isAdmin();
+        }
+      }
+    }
+
+    // ------------------------------------------------------------------------
+    // Global Collection Group Access for System Administrators
+    // Enables administrative oversight and cross-tenant auditing without leaking
+    // records to standard users.
+    // ------------------------------------------------------------------------
+    match /{path=**}/projects/{projectId} {
+      allow read: if isAdmin();
+    }
+
+    match /{path=**}/stocks/{stockId} {
+      allow read: if isAdmin();
+    }
+
+    // ------------------------------------------------------------------------
+    // 4. System Status Collection (/system_status/{docId})
+    // Public health / maintenance status explicitly readable by any client.
+    // Writes restricted strictly to System Administrators.
+    // ------------------------------------------------------------------------
+    match /system_status/{docId} {
+      allow read: if true;
+      allow create, update: if isAdmin() && isValidSystemStatus(request.resource.data);
+      allow delete: if isAdmin();
+    }
+
+    // ------------------------------------------------------------------------
+    // Default Deny Root Fallback
+    // Guarantees any unmapped collection or path is completely unreachable.
+    // ------------------------------------------------------------------------
+    match /{document=**} {
+      allow read, write: false;
+    }
+  }
+}
