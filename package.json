@@ -12,10 +12,12 @@
   },
   "dependencies": {
     "@google/generative-ai": "^0.17.1",
+    "@opentelemetry/api": "^1.10.0",
     "@prisma/client": "^5.18.0",
     "bcryptjs": "^2.4.3",
     "canvas-confetti": "^1.9.3",
     "clsx": "^2.1.1",
+    "firebase-admin": "^14.5.0",
     "framer-motion": "^11.3.28",
     "jspdf": "^2.5.1",
     "jspdf-autotable": "^3.8.2",

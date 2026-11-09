@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server';
 import { getServerSession } from 'next-auth';
 import { authOptions } from '@/lib/auth';
 import { prisma } from '@/lib/prisma';
+import { syncProjectToFirebase } from '@/lib/firebaseSync';
 
 export const dynamic = 'force-dynamic';
 
@@ -86,6 +87,9 @@ export async function POST(request: Request) {
         },
       },
     });
+
+    // Auto-sync project to Firebase Firestore
+    await syncProjectToFirebase(userId, project);
 
     return NextResponse.json({ success: true, project });
   } catch (error: any) {

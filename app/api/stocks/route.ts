@@ -3,6 +3,7 @@ import { getServerSession } from 'next-auth';
 import { authOptions } from '@/lib/auth';
 import { prisma } from '@/lib/prisma';
 import { STANDARD_BAR_DIAMETERS, getUnitWeight } from '@/lib/engine/is2502';
+import { syncStockToFirebase } from '@/lib/firebaseSync';
 
 export const dynamic = 'force-dynamic';
 
@@ -181,6 +182,9 @@ export async function POST(request: Request) {
         project: { select: { projectName: true } },
       },
     });
+
+    // Auto-sync stock transaction to Firebase Firestore
+    await syncStockToFirebase(userId, newTx);
 
     return NextResponse.json({ success: true, transaction: newTx });
   } catch (error: any) {

@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server';
 import bcrypt from 'bcryptjs';
 import { prisma } from '@/lib/prisma';
+import { syncUserToFirebase } from '@/lib/firebaseSync';
 
 export async function POST(request: Request) {
   try {
@@ -42,6 +43,9 @@ export async function POST(request: Request) {
         subscriptionExpiresAt: null,
       },
     });
+
+    // Auto-sync user to Firebase Firestore cloud database
+    await syncUserToFirebase(user);
 
     return NextResponse.json({
       success: true,

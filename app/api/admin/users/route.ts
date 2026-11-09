@@ -3,6 +3,7 @@ import { getServerSession } from 'next-auth';
 import { authOptions } from '@/lib/auth';
 import { prisma } from '@/lib/prisma';
 import bcrypt from 'bcryptjs';
+import { syncUserToFirebase } from '@/lib/firebaseSync';
 
 export const dynamic = 'force-dynamic';
 
@@ -89,6 +90,8 @@ export async function POST(request: Request) {
         },
       });
 
+      await syncUserToFirebase(newUser);
+
       return NextResponse.json({
         success: true,
         message: `User account '${newUser.email}' created successfully`,
@@ -151,6 +154,8 @@ export async function POST(request: Request) {
         data: updateData,
       });
 
+      await syncUserToFirebase(updated);
+
       return NextResponse.json({
         success: true,
         message: `User '${updated.email}' updated successfully`,
@@ -170,6 +175,8 @@ export async function POST(request: Request) {
         },
       });
 
+      await syncUserToFirebase(updated);
+
       return NextResponse.json({
         success: true,
         message: `User '${updated.email}' has been suspended`,
@@ -188,6 +195,8 @@ export async function POST(request: Request) {
           subscriptionStatus: 'REJECTED',
         },
       });
+
+      await syncUserToFirebase(updated);
 
       return NextResponse.json({
         success: true,
@@ -238,6 +247,8 @@ export async function POST(request: Request) {
           subscriptionExpiresAt: expiresAt,
         },
       });
+
+      await syncUserToFirebase(updated);
 
       return NextResponse.json({
         success: true,
