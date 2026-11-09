@@ -1,0 +1,139 @@
+// Prisma schema for SmartBBS Pro
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id                    String    @id @default(cuid())
+  email                 String    @unique
+  passwordHash          String?
+  name                  String?
+  companyName           String?
+  phone                 String?
+  address               String?
+  role                  String    @default("STANDARD_USER") // "SYSTEM_ADMIN" | "STANDARD_USER"
+  isApprovedByAdmin     Boolean   @default(false)
+  subscriptionStatus    String    @default("PENDING") // "ACTIVE" | "TRIAL" | "PENDING" | "EXPIRED" | "CANCELLED"
+  planTier              String    @default("FREE_TRIAL") // "FREE_TRIAL" | "MONTHLY_PRO" | "YEARLY_PRO" | "ENTERPRISE"
+  trialStartedAt        DateTime?
+  trialEndsAt           DateTime?
+  subscriptionExpiresAt DateTime?
+  createdAt             DateTime  @default(now())
+  updatedAt             DateTime           @updatedAt
+  projects              Project[]
+  stockTransactions     StockTransaction[]
+}
+
+model Project {
+  id                String       @id @default(cuid())
+  userId            String
+  user              User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  projectName       String
+  clientName        String?
+  contractorName    String?
+  technicalAgency   String?
+  authorityStandard String       @default("MAHARASHTRA_PWD") // "MAHARASHTRA_PWD" | "CPWD" | "IS_STANDARD"
+  siteLocation      String?
+  rccGrade          String       @default("M25")
+  rebarGrade        String       @default("Fe500D")
+  notes             String?
+  createdDate       DateTime     @default(now())
+  updatedAt         DateTime     @updatedAt
+  members           Member[]
+  cuttingRuns       CuttingRun[]
+  auditLogs         AuditLog[]
+  stockTransactions StockTransaction[]
+}
+
+model Member {
+  id             String      @id @default(cuid())
+  projectId      String
+  project        Project     @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  memberTag      String      // e.g. "F1", "C1-GFL", "B101", "S1", "STR-1", "UGWT-WALL", "PARDI-1", "PCC-1"
+  memberType     String      // "FOOTING" | "COLUMN" | "BEAM" | "SLAB" | "STAIRCASE" | "WATER_TANK" | "RETAINING_WALL" | "RCC_PARDI" | "PLAIN_PCC_MESH"
+  subType        String?     // e.g. "STEPPED_FOOTING", "STRAP_FOOTING", "CONTINUOUS_BEAM", "CIRCULAR_SPIRAL", "TWO_WAY_RESTRAINED", etc.
+  clearCover     Float       @default(40.0) // mm
+  concreteGrade  String      @default("M25")
+  steelGrade     String      @default("Fe500D")
+  dimensionsJson String?     // e.g. length, width, depth, span, height
+  remarks        String?
+  sortOrder      Int         @default(0)
+  createdAt      DateTime    @default(now())
+  updatedAt      DateTime    @updatedAt
+  rebarItems     RebarItem[]
+}
+
+model RebarItem {
+  id                  String   @id @default(cuid())
+  memberId            String
+  member              Member   @relation(fields: [memberId], references: [id], onDelete: Cascade)
+  barMark             String   // e.g. "1", "2a", "T1", "B1", "ST-1"
+  shapeCode           String   // e.g. "20", "21", "37", "38", "41", "51", "61", "71", "81", "86", "CHAIR", "CRANK", "SPIRAL", "U_PIN"
+  dia                 Int      // mm: 8, 10, 12, 16, 20, 25, 28, 32, 36, 40
+  count               Int      // Number of bars
+  dimA                Float    @default(0) // mm
+  dimB                Float    @default(0) // mm
+  dimC                Float    @default(0) // mm
+  dimD                Float    @default(0) // mm
+  dimE                Float    @default(0) // mm
+  bendRadius          Float?   // mm
+  calculatedCutLength Float    // mm (rounded up to 25mm per IS 2502)
+  unitWeight          Float    // kg/m (dia^2 / 162.2)
+  isPayable           Boolean  @default(true) // PWD billing flag
+  isChair             Boolean  @default(false)
+  isLap               Boolean  @default(false)
+  remarks             String?
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+}
+
+model CuttingRun {
+  id               String   @id @default(cuid())
+  projectId        String
+  project          Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  dia              Int
+  stockLength      Float    @default(12000) // 12.0m commercial bar
+  totalBarsUsed    Int
+  totalScrapWeight Float
+  scrapPercentage  Float
+  cutPiecesCount   Int
+  patternsJson     String   // Detailed cut layout patterns
+  createdAt        DateTime @default(now())
+}
+
+model AuditLog {
+  id            String   @id @default(cuid())
+  projectId     String
+  project       Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  severity      String   // "CRITICAL" | "WARNING" | "INFO" | "PASSED"
+  codeReference String   // e.g. "IS 13920:2016 Cl. 6.2.3", "IS 456:2000 Cl. 26.5.1"
+  ruleTitle     String
+  message       String
+  memberTag     String?
+  isResolved    Boolean  @default(false)
+  createdAt     DateTime @default(now())
+}
+
+model StockTransaction {
+  id              String   @id @default(cuid())
+  userId          String
+  user            User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  transactionType String   // "PROCUREMENT" (Inward) | "ISSUE" (Outward to Site)
+  dia             Int      // 6, 8, 10, 12, 16, 20, 25, 28, 32, 36, 40
+  quantityKg      Float    // In kilograms
+  steelGrade      String   @default("Fe500D")
+  date            DateTime @default(now())
+  supplier        String?  // Supplier / Manufacturer (Tata, JSW, Jindal, etc.)
+  invoiceNo       String?  // Invoice / Challan / Heat Number
+  projectId       String?  // Target Project if issued
+  project         Project? @relation(fields: [projectId], references: [id], onDelete: SetNull)
+  remarks         String?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+}
