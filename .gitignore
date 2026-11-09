@@ -38,3 +38,8 @@ prisma/*.db
 prisma/*.db-journal
 *.db
 *.db-journal
+
+# Binaries & Manifests
+cloudflared.exe
+vercel-manifest.json
+
