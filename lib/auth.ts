@@ -46,25 +46,11 @@ export const authOptions: NextAuthOptions = {
           };
         }
 
-        // 2. Query Firestore Cloud Database (Primary persistent source of truth)
-        let user: any = await findUserByEmail(lookup);
+        // 2. Query Firestore Cloud Database (Authoritative single source of truth)
+        const user: any = await findUserByEmail(lookup);
 
-        // 3. Fallback to Prisma SQLite database if Firestore was unreachable
-        if (!user) {
-          try {
-            user = await prisma.user.findFirst({
-              where: {
-                OR: [
-                  { email: lookup },
-                  ...(lookup === 'admin' ? [{ email: 'admin' }, { email: 'creativeassociates17@gmail.com' }, { email: 'admin@smartbbs.com' }] : []),
-                ],
-              },
-            });
-          } catch (dbErr) {
-            console.warn('[Auth] Prisma lookup warning:', dbErr);
-          }
-        }
-
+        // Security Enforcement: If not in Firestore, user does not exist or has been deleted.
+        // Prisma SQLite fallback is completely disabled to prevent deleted users from logging in.
         if (!user || !user.passwordHash) {
           throw new Error('Invalid Admin ID / Email or password');
         }
@@ -72,6 +58,11 @@ export const authOptions: NextAuthOptions = {
         const isMatch = await bcrypt.compare(credentials.password, user.passwordHash);
         if (!isMatch) {
           throw new Error('Invalid Admin ID / Email or password');
+        }
+
+        // Check if registration was rejected by admin
+        if (user.subscriptionStatus === 'REJECTED') {
+          throw new Error('Your registration has been declined by the administrator. Please contact Creative Associate LLP at +91 8484 86 6868.');
         }
 
         const isSystemAdmin = user.role === 'SYSTEM_ADMIN' || user.email === 'admin' || user.email === 'creativeassociates17@gmail.com' || user.email === 'admin@smartbbs.com';
@@ -131,12 +122,14 @@ export const authOptions: NextAuthOptions = {
         token.planTier = (user as any).planTier || 'FREE_TRIAL';
         token.trialEndsAt = (user as any).trialEndsAt;
         token.subscriptionExpiresAt = (user as any).subscriptionExpiresAt;
+        token.lastChecked = Date.now();
       }
       if (trigger === 'update' && session) {
         if (session.planTier) token.planTier = session.planTier;
         if (session.subscriptionStatus) token.subscriptionStatus = session.subscriptionStatus;
         if (session.isApprovedByAdmin !== undefined) token.isApprovedByAdmin = session.isApprovedByAdmin;
         if (session.subscriptionExpiresAt !== undefined) token.subscriptionExpiresAt = session.subscriptionExpiresAt;
+        token.lastChecked = 0; // force immediate re-check
       }
       return token;
     },
@@ -153,15 +146,14 @@ export const authOptions: NextAuthOptions = {
         (session.user as any).trialEndsAt = token.trialEndsAt;
         (session.user as any).subscriptionExpiresAt = token.subscriptionExpiresAt;
 
-        // Fetch live Firestore user state to reflect Admin approvals/suspensions in real-time
-        try {
-          if (token.id) {
-            let liveUser: any = await findUserById(token.id as string);
-            if (!liveUser) {
-              liveUser = await prisma.user.findUnique({
-                where: { id: token.id as string },
-              }).catch(() => null);
-            }
+        // Periodic live Firestore check (every 30s) or on update to reflect Admin changes
+        const nowMs = Date.now();
+        const shouldRefresh = !token.lastChecked || (nowMs - (token.lastChecked as number)) > 30000;
+
+        if (token.id && token.id !== 'cmw90khi20000l2c1k5g3euvv' && shouldRefresh) {
+          try {
+            const liveUser: any = await findUserById(token.id as string);
+            token.lastChecked = nowMs;
 
             if (liveUser) {
               const isSysAdmin = liveUser.role === 'SYSTEM_ADMIN' || liveUser.email === 'admin';
@@ -191,10 +183,14 @@ export const authOptions: NextAuthOptions = {
               (session.user as any).companyName = liveUser.companyName;
               (session.user as any).phone = liveUser.phone;
               (session.user as any).address = liveUser.address;
+            } else {
+              // User has been deleted by admin: invalidate session immediately
+              (session.user as any).subscriptionStatus = 'SUSPENDED';
+              (session.user as any).isApprovedByAdmin = false;
             }
+          } catch (e) {
+            // fallback to token if db lookup fails
           }
-        } catch (e) {
-          // fallback to token if db lookup fails
         }
       }
       return session;

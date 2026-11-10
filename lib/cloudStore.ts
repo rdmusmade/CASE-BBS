@@ -103,26 +103,38 @@ export async function findUserByEmail(email: string): Promise<CloudUser | null> 
   const clean = email.toLowerCase().trim();
 
   try {
-    // 1. Direct doc lookup by ID (e.g. 'admin' or cuid)
+    // 1. Direct check for Master Admin
+    if (clean === 'admin' || clean === 'creativeassociates17@gmail.com' || clean === 'admin@smartbbs.com') {
+      const adminDoc = await db.collection('users').doc('admin').get();
+      if (adminDoc.exists) {
+        return { id: adminDoc.id, ...adminDoc.data() } as CloudUser;
+      }
+      const adminById = await db.collection('users').doc('cmw90khi20000l2c1k5g3euvv').get();
+      if (adminById.exists) {
+        return { id: adminById.id, ...adminById.data() } as CloudUser;
+      }
+    }
+
+    // 2. Direct email search (single fast round-trip)
+    if (clean.includes('@')) {
+      const snap = await db.collection('users').where('email', '==', clean).limit(1).get();
+      if (!snap.empty) {
+        const d = snap.docs[0];
+        return { id: d.id, ...d.data() } as CloudUser;
+      }
+      return null;
+    }
+
+    // 3. Username or ID search
     const directDoc = await db.collection('users').doc(clean).get();
     if (directDoc.exists) {
       return { id: directDoc.id, ...directDoc.data() } as CloudUser;
     }
 
-    // 2. Query by email field
     const snap = await db.collection('users').where('email', '==', clean).limit(1).get();
     if (!snap.empty) {
       const d = snap.docs[0];
       return { id: d.id, ...d.data() } as CloudUser;
-    }
-
-    // 3. Admin aliases
-    if (clean === 'admin' || clean === 'creativeassociates17@gmail.com' || clean === 'admin@smartbbs.com') {
-      const adminSnap = await db.collection('users').where('role', '==', 'SYSTEM_ADMIN').limit(1).get();
-      if (!adminSnap.empty) {
-        const d = adminSnap.docs[0];
-        return { id: d.id, ...d.data() } as CloudUser;
-      }
     }
 
     return null;
@@ -205,12 +217,45 @@ export async function deleteUser(id: string): Promise<boolean> {
   if (!db) return false;
 
   try {
+    const userDoc = await db.collection('users').doc(id).get();
+    const userEmail = userDoc.exists ? (userDoc.data()?.email as string) : null;
+
+    // Delete primary doc by ID
     await db.collection('users').doc(id).delete();
-    // Also delete user's projects
+
+    // Delete any alias docs by email
+    if (userEmail) {
+      await db.collection('users').doc(userEmail).delete().catch(() => {});
+      const emailSnap = await db.collection('users').where('email', '==', userEmail).get();
+      for (const d of emailSnap.docs) {
+        await d.ref.delete().catch(() => {});
+      }
+
+      // Delete user's projects by email
+      const projSnapEmail = await db.collection('projects').where('userId', '==', userEmail).get();
+      for (const d of projSnapEmail.docs) {
+        await d.ref.delete().catch(() => {});
+      }
+
+      // Delete user's stock transactions by email
+      const stockSnapEmail = await db.collection('stockTransactions').where('userId', '==', userEmail).get();
+      for (const d of stockSnapEmail.docs) {
+        await d.ref.delete().catch(() => {});
+      }
+    }
+
+    // Delete user's projects by ID
     const projSnap = await db.collection('projects').where('userId', '==', id).get();
-    const batch = db.batch();
-    projSnap.forEach((doc) => batch.delete(doc.ref));
-    await batch.commit();
+    for (const d of projSnap.docs) {
+      await d.ref.delete().catch(() => {});
+    }
+
+    // Delete user's stock transactions by ID
+    const stockSnap = await db.collection('stockTransactions').where('userId', '==', id).get();
+    for (const d of stockSnap.docs) {
+      await d.ref.delete().catch(() => {});
+    }
+
     return true;
   } catch (err) {
     console.warn('[CloudStore] deleteUser error:', err);

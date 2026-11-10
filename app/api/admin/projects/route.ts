@@ -1,7 +1,8 @@
 import { NextResponse } from 'next/server';
 import { getServerSession } from 'next-auth';
 import { authOptions } from '@/lib/auth';
-import { findProjects, findProjectById } from '@/lib/cloudStore';
+import { findProjects, findProjectById, deleteProject } from '@/lib/cloudStore';
+import { prisma } from '@/lib/prisma';
 
 export const dynamic = 'force-dynamic';
 
@@ -42,5 +43,54 @@ export async function GET(request: Request) {
   } catch (error: any) {
     console.error('Error in admin projects API:', error);
     return NextResponse.json({ error: 'Failed to fetch admin projects' }, { status: 500 });
+  }
+}
+
+export async function DELETE(request: Request) {
+  try {
+    const session = await getServerSession(authOptions);
+    const currentUserRole = (session?.user as any)?.role;
+    const currentUserEmail = session?.user?.email;
+    const isSysAdmin = currentUserRole === 'SYSTEM_ADMIN' || currentUserEmail === 'admin' || currentUserEmail === 'admin@smartbbs.com' || currentUserEmail === 'creativeassociates17@gmail.com';
+
+    if (!isSysAdmin) {
+      return NextResponse.json({ error: 'Forbidden: Super Administrator access required' }, { status: 403 });
+    }
+
+    const body = await request.json();
+    const { projectId, adminPassword } = body;
+
+    if (!projectId) {
+      return NextResponse.json({ error: 'Project ID is required' }, { status: 400 });
+    }
+
+    // Require admin password verification for project deletion
+    if (!adminPassword || adminPassword.trim() !== '2484553644') {
+      return NextResponse.json(
+        { error: 'Incorrect administrator password. Deletion cancelled for security.' },
+        { status: 401 }
+      );
+    }
+
+    // 1. Delete from Firestore Cloud Database
+    const deleted = await deleteProject(projectId, '', true);
+    if (!deleted) {
+      return NextResponse.json({ error: 'Project not found or already deleted' }, { status: 404 });
+    }
+
+    // 2. Dual-delete from local Prisma cache if present
+    try {
+      await prisma.project.delete({ where: { id: projectId } });
+    } catch (e) {
+      // ignore
+    }
+
+    return NextResponse.json({
+      success: true,
+      message: 'Project and all associated bar bending schedules deleted permanently.',
+    });
+  } catch (error: any) {
+    console.error('Error deleting project by admin:', error);
+    return NextResponse.json({ error: error.message || 'Failed to delete project' }, { status: 500 });
   }
 }

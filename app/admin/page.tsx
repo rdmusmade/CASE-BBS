@@ -97,6 +97,13 @@ function AdminContent() {
   const [inspectingProject, setInspectingProject] = useState<any | null>(null);
   const [inspectLoading, setInspectLoading] = useState(false);
 
+  // Project Delete Confirmation Modal (Admin Password Required)
+  const [deleteProjectModalOpen, setDeleteProjectModalOpen] = useState(false);
+  const [targetProjectToDelete, setTargetProjectToDelete] = useState<any | null>(null);
+  const [adminDeletePassword, setAdminDeletePassword] = useState('');
+  const [deletingProjectLoading, setDeletingProjectLoading] = useState(false);
+  const [deleteProjectError, setDeleteProjectError] = useState<string | null>(null);
+
   const isSystemAdmin =
     user?.role === 'SYSTEM_ADMIN' ||
     user?.email === 'admin' ||
@@ -397,6 +404,47 @@ function AdminContent() {
       alert(err.message || 'Error fetching project');
     } finally {
       setInspectLoading(false);
+    }
+  };
+
+  // Admin Project Deletion with Password Verification
+  const handleConfirmDeleteProject = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!targetProjectToDelete) return;
+
+    if (!adminDeletePassword || adminDeletePassword.trim() !== '2484553644') {
+      setDeleteProjectError('Incorrect administrator password. Please enter the master password (2484553644).');
+      return;
+    }
+
+    setDeletingProjectLoading(true);
+    setDeleteProjectError(null);
+
+    try {
+      const res = await fetch('/api/admin/projects', {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          projectId: targetProjectToDelete.id,
+          adminPassword: adminDeletePassword.trim(),
+        }),
+      });
+
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.error || 'Failed to delete project');
+      }
+
+      alert(`Project '${targetProjectToDelete.projectName}' and all its BBS schedules have been deleted permanently.`);
+      setDeleteProjectModalOpen(false);
+      setTargetProjectToDelete(null);
+      setAdminDeletePassword('');
+      if (inspectModalOpen) setInspectModalOpen(false);
+      await fetchAdminData();
+    } catch (err: any) {
+      setDeleteProjectError(err.message || 'Error deleting project');
+    } finally {
+      setDeletingProjectLoading(false);
     }
   };
 
@@ -908,13 +956,28 @@ function AdminContent() {
                               {new Date(p.createdDate || p.createdAt || Date.now()).toLocaleDateString()}
                             </td>
                             <td className="py-3.5 px-3 text-right">
-                              <button
-                                onClick={() => handleInspectProject(p.id)}
-                                className="px-3 py-1.5 rounded-xl bg-amber-500/10 hover:bg-amber-500/20 text-amber-700 dark:text-amber-300 border border-amber-500/30 text-xs font-bold inline-flex items-center gap-1.5 transition-all shadow-sm"
-                              >
-                                <Eye className="w-3.5 h-3.5 text-amber-500" />
-                                Inspect BBS (Read-Only)
-                              </button>
+                              <div className="flex items-center justify-end gap-2">
+                                <button
+                                  onClick={() => handleInspectProject(p.id)}
+                                  className="px-3 py-1.5 rounded-xl bg-amber-500/10 hover:bg-amber-500/20 text-amber-700 dark:text-amber-300 border border-amber-500/30 text-xs font-bold inline-flex items-center gap-1.5 transition-all shadow-sm"
+                                >
+                                  <Eye className="w-3.5 h-3.5 text-amber-500" />
+                                  Inspect BBS (Read-Only)
+                                </button>
+                                <button
+                                  onClick={() => {
+                                    setTargetProjectToDelete(p);
+                                    setAdminDeletePassword('');
+                                    setDeleteProjectError(null);
+                                    setDeleteProjectModalOpen(true);
+                                  }}
+                                  className="px-2.5 py-1.5 rounded-xl bg-rose-500/10 hover:bg-rose-500/20 text-rose-700 dark:text-rose-400 border border-rose-500/30 text-xs font-bold inline-flex items-center gap-1.5 transition-all shadow-sm"
+                                  title="Delete Project (Admin Password Required)"
+                                >
+                                  <Trash2 className="w-3.5 h-3.5 text-rose-500" />
+                                  Delete
+                                </button>
+                              </div>
                             </td>
                           </tr>
                         ))
@@ -1586,17 +1649,120 @@ function AdminContent() {
               )}
             </div>
 
-            <div className="p-4 border-t border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950/60 flex items-center justify-between">
+            <div className="p-4 border-t border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950/60 flex items-center justify-between gap-3">
               <span className="text-xs text-slate-500 dark:text-slate-400 italic">
                 * As System Admin, you are viewing this project in read-only inspection mode. User project data cannot be altered by Admin.
               </span>
+              <div className="flex items-center gap-2">
+                {inspectingProject && (
+                  <button
+                    onClick={() => {
+                      setTargetProjectToDelete(inspectingProject);
+                      setAdminDeletePassword('');
+                      setDeleteProjectError(null);
+                      setDeleteProjectModalOpen(true);
+                    }}
+                    className="px-3.5 py-2 rounded-xl bg-rose-500/15 hover:bg-rose-500/25 text-rose-600 dark:text-rose-400 border border-rose-500/30 text-xs font-bold inline-flex items-center gap-1.5 transition-colors"
+                  >
+                    <Trash2 className="w-3.5 h-3.5 text-rose-500" />
+                    Delete Project (Password Required)
+                  </button>
+                )}
+                <button
+                  onClick={() => setInspectModalOpen(false)}
+                  className="px-4 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-white text-xs font-semibold"
+                >
+                  Close Inspection
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ============================================================== */}
+      {/* MODAL 5: DELETE PROJECT (ADMIN PASSWORD REQUIRED)             */}
+      {/* ============================================================== */}
+      {deleteProjectModalOpen && targetProjectToDelete && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-md">
+          <div className="w-full max-w-md bg-white dark:bg-slate-900 border border-rose-500/30 dark:border-rose-500/30 rounded-3xl overflow-hidden shadow-2xl flex flex-col animate-in fade-in zoom-in-95 duration-200">
+            <div className="flex items-center justify-between px-6 py-4 border-b border-rose-200 dark:border-rose-950/60 bg-rose-500/10 dark:bg-rose-950/30">
+              <div className="flex items-center gap-2 text-rose-600 dark:text-rose-400">
+                <AlertTriangle className="w-5 h-5 text-rose-500" />
+                <h3 className="text-base font-black">
+                  Admin Project Deletion
+                </h3>
+              </div>
               <button
-                onClick={() => setInspectModalOpen(false)}
-                className="px-4 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-white text-xs font-semibold"
+                onClick={() => setDeleteProjectModalOpen(false)}
+                className="p-1.5 rounded-xl text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors"
               >
-                Close Inspection
+                <X className="w-5 h-5" />
               </button>
             </div>
+
+            <form onSubmit={handleConfirmDeleteProject} className="p-6 space-y-4">
+              <div className="bg-rose-50 dark:bg-rose-950/20 border border-rose-200 dark:border-rose-900/40 rounded-2xl p-3.5 text-xs text-rose-800 dark:text-rose-300 space-y-1.5">
+                <p className="font-bold">⚠️ Irreversible Administrator Action</p>
+                <p>
+                  You are about to delete project <span className="font-mono font-bold underline">{targetProjectToDelete.projectName}</span> (Owner: {targetProjectToDelete.user?.name || targetProjectToDelete.user?.email || 'User'}).
+                </p>
+                <p className="text-[11px] text-rose-700/80 dark:text-rose-400/80">
+                  This will permanently wipe all members, bar schedules, and calculated BBS metrics from the cloud database.
+                </p>
+              </div>
+
+              <div>
+                <label className="block text-xs font-bold text-slate-700 dark:text-slate-300 mb-1.5">
+                  Enter Admin Master Password to Confirm
+                </label>
+                <input
+                  type="password"
+                  value={adminDeletePassword}
+                  onChange={(e) => {
+                    setAdminDeletePassword(e.target.value);
+                    setDeleteProjectError(null);
+                  }}
+                  placeholder="Master Admin Password"
+                  className="w-full bg-slate-50 dark:bg-slate-950 border border-slate-300 dark:border-slate-700 rounded-xl px-3.5 py-2.5 text-sm font-mono text-slate-900 dark:text-slate-100 focus:outline-none focus:border-rose-500 focus:ring-1 focus:ring-rose-500"
+                  autoFocus
+                  required
+                />
+              </div>
+
+              {deleteProjectError && (
+                <div className="p-3 bg-red-500/10 border border-red-500/30 rounded-xl text-red-600 dark:text-red-400 text-xs font-medium">
+                  {deleteProjectError}
+                </div>
+              )}
+
+              <div className="flex items-center justify-end gap-2 pt-2 border-t border-slate-200 dark:border-slate-800">
+                <button
+                  type="button"
+                  onClick={() => setDeleteProjectModalOpen(false)}
+                  className="px-4 py-2 rounded-xl border border-slate-300 dark:border-slate-700 text-slate-700 dark:text-slate-300 text-xs font-semibold hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={deletingProjectLoading || !adminDeletePassword}
+                  className="px-4 py-2 rounded-xl bg-rose-600 hover:bg-rose-700 text-white text-xs font-bold flex items-center gap-1.5 shadow-md shadow-rose-600/20 disabled:opacity-50 transition-all"
+                >
+                  {deletingProjectLoading ? (
+                    <>
+                      <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                      Deleting...
+                    </>
+                  ) : (
+                    <>
+                      <Trash2 className="w-3.5 h-3.5" />
+                      Confirm & Delete
+                    </>
+                  )}
+                </button>
+              </div>
+            </form>
           </div>
         </div>
       )}
