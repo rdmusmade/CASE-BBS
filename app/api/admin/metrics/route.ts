@@ -1,7 +1,7 @@
 import { NextResponse } from 'next/server';
 import { getServerSession } from 'next-auth';
 import { authOptions } from '@/lib/auth';
-import { prisma } from '@/lib/prisma';
+import { getAllUsers, findProjects } from '@/lib/cloudStore';
 
 export const dynamic = 'force-dynamic';
 
@@ -16,40 +16,37 @@ export async function GET() {
       return NextResponse.json({ error: 'Forbidden: Admin access required' }, { status: 403 });
     }
 
-    const totalUsers = await prisma.user.count();
-    const totalProjects = await prisma.project.count();
-    const totalMembers = await prisma.member.count();
-    const totalRebarItems = await prisma.rebarItem.count();
+    // 1. Fetch live persistent state from Firestore Cloud Database
+    const users = await getAllUsers();
+    const allProjects = await findProjects('', true);
 
-    const users = await prisma.user.findMany({
-      select: {
-        id: true,
-        email: true,
-        name: true,
-        companyName: true,
-        phone: true,
-        address: true,
-        role: true,
-        isApprovedByAdmin: true,
-        planTier: true,
-        subscriptionStatus: true,
-        trialStartedAt: true,
-        trialEndsAt: true,
-        subscriptionExpiresAt: true,
-        createdAt: true,
-        _count: { select: { projects: true } },
-      },
-      orderBy: { createdAt: 'desc' },
+    const totalUsers = users.length;
+    const totalProjects = allProjects.length;
+
+    let totalMembers = 0;
+    let totalRebarItems = 0;
+
+    allProjects.forEach((p: any) => {
+      const members = p.members || [];
+      totalMembers += members.length;
+      members.forEach((m: any) => {
+        totalRebarItems += (m.rebarItems || []).length;
+      });
     });
 
-    const recentProjects = await prisma.project.findMany({
-      take: 8,
-      include: {
-        user: { select: { name: true, email: true, companyName: true } },
-        _count: { select: { members: true } },
-      },
-      orderBy: { updatedAt: 'desc' },
+    // Format users with project counts
+    const usersWithCounts = users.map((u) => {
+      const userProjectsCount = allProjects.filter((p) => p.userId === u.id || p.userId === u.email).length;
+      return {
+        ...u,
+        _count: { projects: userProjectsCount },
+      };
     });
+
+    const recentProjects = allProjects.slice(0, 10).map((p) => ({
+      ...p,
+      _count: { members: (p.members || []).length },
+    }));
 
     return NextResponse.json({
       success: true,
@@ -62,7 +59,7 @@ export async function GET() {
         systemHealth: 'OPTIMAL_100_PERCENT',
         isGeminiKeyConfigured: Boolean(process.env.GEMINI_API_KEY),
       },
-      users,
+      users: usersWithCounts,
       recentProjects,
     });
   } catch (error: any) {

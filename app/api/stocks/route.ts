@@ -3,7 +3,12 @@ import { getServerSession } from 'next-auth';
 import { authOptions } from '@/lib/auth';
 import { prisma } from '@/lib/prisma';
 import { STANDARD_BAR_DIAMETERS, getUnitWeight } from '@/lib/engine/is2502';
-import { syncStockToFirebase } from '@/lib/firebaseSync';
+import {
+  findStockTransactions,
+  createStockTransaction,
+  deleteStockTransaction,
+  findProjects,
+} from '@/lib/cloudStore';
 
 export const dynamic = 'force-dynamic';
 
@@ -15,29 +20,13 @@ export async function GET(request: Request) {
     }
 
     const userId = (session.user as any).id;
-    const isSystemAdmin = (session.user as any).role === 'SYSTEM_ADMIN';
+    const isSysAdmin = (session.user as any).role === 'SYSTEM_ADMIN' || session.user.email === 'admin';
 
-    // 1. Fetch all stock transactions (Admin sees all, User sees own)
-    const transactions = await prisma.stockTransaction.findMany({
-      where: isSystemAdmin ? {} : { userId },
-      include: {
-        project: { select: { projectName: true, clientName: true } },
-        user: { select: { name: true, email: true } },
-      },
-      orderBy: { date: 'desc' },
-    });
+    // 1. Fetch stock transactions from Firestore Cloud Database
+    const transactions = await findStockTransactions(userId, isSysAdmin);
 
-    // 2. Fetch active projects and members to calculate BBS Steel Required per dia
-    const projects = await prisma.project.findMany({
-      where: isSystemAdmin ? {} : { userId },
-      include: {
-        members: {
-          include: {
-            rebarItems: true,
-          },
-        },
-      },
-    });
+    // 2. Fetch projects & members to calculate BBS Steel Required per dia
+    const projects = await findProjects(userId, isSysAdmin);
 
     // Aggregate BBS Steel requirement by bar diameter in kg
     const bbsRequiredByDia: Record<number, number> = {};
@@ -45,9 +34,9 @@ export async function GET(request: Request) {
       bbsRequiredByDia[d] = 0;
     });
 
-    projects.forEach((proj) => {
-      proj.members.forEach((m) => {
-        m.rebarItems.forEach((r) => {
+    projects.forEach((proj: any) => {
+      (proj.members || []).forEach((m: any) => {
+        (m.rebarItems || []).forEach((r: any) => {
           const dia = Number(r.dia);
           const cutLen = Number(r.calculatedCutLength) || 0;
           const count = Number(r.count) || 0;
@@ -125,7 +114,7 @@ export async function GET(request: Request) {
       },
       reconciliationMatrix,
       transactions,
-      projects: projects.map((p) => ({ id: p.id, projectName: p.projectName })),
+      projects: projects.map((p: any) => ({ id: p.id, projectName: p.projectName })),
     });
   } catch (error: any) {
     console.error('Error fetching steel stocks:', error);
@@ -144,7 +133,7 @@ export async function POST(request: Request) {
     const body = await request.json();
 
     const {
-      transactionType, // "PROCUREMENT" | "ISSUE"
+      transactionType,
       dia,
       quantityKg,
       steelGrade,
@@ -165,26 +154,44 @@ export async function POST(request: Request) {
     const parsedDia = Number(dia);
     const parsedQty = Math.abs(Number(quantityKg));
 
-    const newTx = await prisma.stockTransaction.create({
-      data: {
-        userId,
-        transactionType: transactionType.toUpperCase(),
-        dia: parsedDia,
-        quantityKg: parsedQty,
-        steelGrade: steelGrade || 'Fe500D',
-        date: date ? new Date(date) : new Date(),
-        supplier: supplier || null,
-        invoiceNo: invoiceNo || null,
-        projectId: projectId || null,
-        remarks: remarks || null,
-      },
-      include: {
-        project: { select: { projectName: true } },
+    // 1. Save directly to Firestore Cloud Database
+    const newTx = await createStockTransaction({
+      userId,
+      transactionType: transactionType.toUpperCase() as any,
+      dia: parsedDia,
+      quantityKg: parsedQty,
+      steelGrade: steelGrade || 'Fe500D',
+      date: date || new Date().toISOString(),
+      supplier: supplier || null,
+      invoiceNo: invoiceNo || null,
+      projectId: projectId || null,
+      remarks: remarks || null,
+      user: {
+        name: session.user.name,
+        email: session.user.email,
       },
     });
 
-    // Auto-sync stock transaction to Firebase Firestore
-    await syncStockToFirebase(userId, newTx);
+    // 2. Dual-sync to local Prisma
+    try {
+      await prisma.stockTransaction.create({
+        data: {
+          id: newTx.id,
+          userId,
+          transactionType: transactionType.toUpperCase(),
+          dia: parsedDia,
+          quantityKg: parsedQty,
+          steelGrade: steelGrade || 'Fe500D',
+          date: date ? new Date(date) : new Date(),
+          supplier: supplier || null,
+          invoiceNo: invoiceNo || null,
+          projectId: projectId || null,
+          remarks: remarks || null,
+        },
+      });
+    } catch (dbErr) {
+      console.warn('[Stocks API] Prisma local cache warning:', dbErr);
+    }
 
     return NextResponse.json({ success: true, transaction: newTx });
   } catch (error: any) {
@@ -208,19 +215,15 @@ export async function DELETE(request: Request) {
     }
 
     const userId = (session.user as any).id;
-    const isSystemAdmin = (session.user as any).role === 'SYSTEM_ADMIN';
+    const isSysAdmin = (session.user as any).role === 'SYSTEM_ADMIN' || session.user.email === 'admin';
 
-    // Verify ownership or admin
-    const tx = await prisma.stockTransaction.findUnique({ where: { id } });
-    if (!tx) {
-      return NextResponse.json({ error: 'Transaction not found' }, { status: 404 });
+    await deleteStockTransaction(id, userId, isSysAdmin);
+
+    try {
+      await prisma.stockTransaction.delete({ where: { id } });
+    } catch (e) {
+      // ignore
     }
-
-    if (!isSystemAdmin && tx.userId !== userId) {
-      return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
-    }
-
-    await prisma.stockTransaction.delete({ where: { id } });
 
     return NextResponse.json({ success: true, message: 'Stock transaction deleted.' });
   } catch (error: any) {

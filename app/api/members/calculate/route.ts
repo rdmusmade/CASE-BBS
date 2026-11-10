@@ -1,4 +1,6 @@
 import { NextResponse } from 'next/server';
+import { getServerSession } from 'next-auth';
+import { authOptions } from '@/lib/auth';
 import { generateFootingBBS, FootingInput } from '@/lib/engine/members/footing';
 import { generateColumnBBS, ColumnInput } from '@/lib/engine/members/column';
 import { generateBeamBBS, BeamInput } from '@/lib/engine/members/beam';
@@ -9,11 +11,16 @@ import { generateRccPardiBBS, RccPardiInput } from '@/lib/engine/members/rccPard
 import { generatePlainPccMeshBBS, PlainPccMeshInput } from '@/lib/engine/members/plainPccMesh';
 import { calculateRebarShape, ShapeCalculationInput } from '@/lib/engine/is2502';
 import { prisma } from '@/lib/prisma';
+import { addMemberToProject } from '@/lib/cloudStore';
 
 export const dynamic = 'force-dynamic';
 
 export async function POST(request: Request) {
   try {
+    const session = await getServerSession(authOptions);
+    const userId = (session?.user as any)?.id || '';
+    const isSysAdmin = (session?.user as any)?.role === 'SYSTEM_ADMIN' || session?.user?.email === 'admin';
+
     const body = await request.json();
     const memberType = body.memberType || body.type;
     const input = body.input || body;
@@ -58,39 +65,76 @@ export async function POST(request: Request) {
         return NextResponse.json({ error: `Unsupported member type: ${memberType}` }, { status: 400 });
     }
 
-    // Optionally save to database if projectId is provided
+    // Save directly to Firestore Cloud Database if projectId is provided
     if (saveToDatabase && projectId) {
-      const createdMember = await prisma.member.create({
-        data: {
+      let createdMember = null;
+      try {
+        createdMember = await addMemberToProject(
           projectId,
-          memberType: memberType.toUpperCase(),
-          memberTag: input.memberTag || `${memberType}-1`,
-          subType: input.footingType || input.beamType || input.columnShape || input.slabType || input.wallType || input.flooringType || input.staircaseType || 'STANDARD',
-          dimensionsJson: JSON.stringify(input),
-          rebarItems: {
-            create: items.map((item) => ({
-              barMark: item.barMark || '1',
-              shapeCode: item.shapeCode || '20',
-              dia: item.dia || 12,
-              count: item.count || 1,
-              dimA: item.dimA || 0,
-              dimB: item.dimB || 0,
-              dimC: item.dimC || 0,
-              dimD: item.dimD || 0,
-              dimE: item.dimE || 0,
-              calculatedCutLength: item.calculatedCutLength || 0,
-              unitWeight: item.unitWeight || (item.dia * item.dia) / 162.2,
-              isPayable: item.isPayable !== false,
-              isChair: Boolean(item.isChair),
-              isLap: Boolean(item.isLap),
-              remarks: item.remarks ? `${item.description || ''} | ${item.remarks}`.trim() : (item.description || ''),
-            })),
+          {
+            memberType: memberType.toUpperCase(),
+            memberTag: input.memberTag || `${memberType}-1`,
+            subType:
+              input.footingType ||
+              input.beamType ||
+              input.columnShape ||
+              input.slabType ||
+              input.wallType ||
+              input.flooringType ||
+              input.staircaseType ||
+              'STANDARD',
+            dimensionsJson: input,
+            rebarItems: items,
           },
-        },
-        include: {
-          rebarItems: true,
-        },
-      });
+          userId,
+          isSysAdmin
+        );
+      } catch (cloudErr) {
+        console.warn('[Members API] Firestore save warning:', cloudErr);
+      }
+
+      // Dual-sync to local Prisma SQLite if accessible
+      try {
+        await prisma.member.create({
+          data: {
+            id: createdMember?.id,
+            projectId,
+            memberType: memberType.toUpperCase(),
+            memberTag: input.memberTag || `${memberType}-1`,
+            subType:
+              input.footingType ||
+              input.beamType ||
+              input.columnShape ||
+              input.slabType ||
+              input.wallType ||
+              input.flooringType ||
+              input.staircaseType ||
+              'STANDARD',
+            dimensionsJson: JSON.stringify(input),
+            rebarItems: {
+              create: items.map((item) => ({
+                barMark: item.barMark || '1',
+                shapeCode: item.shapeCode || '20',
+                dia: item.dia || 12,
+                count: item.count || 1,
+                dimA: item.dimA || 0,
+                dimB: item.dimB || 0,
+                dimC: item.dimC || 0,
+                dimD: item.dimD || 0,
+                dimE: item.dimE || 0,
+                calculatedCutLength: item.calculatedCutLength || 0,
+                unitWeight: item.unitWeight || (item.dia * item.dia) / 162.2,
+                isPayable: item.isPayable !== false,
+                isChair: Boolean(item.isChair),
+                isLap: Boolean(item.isLap),
+                remarks: item.remarks ? `${item.description || ''} | ${item.remarks}`.trim() : item.description || '',
+              })),
+            },
+          },
+        });
+      } catch (dbErr) {
+        console.warn('[Members API] Prisma local cache warning:', dbErr);
+      }
 
       return NextResponse.json({
         success: true,

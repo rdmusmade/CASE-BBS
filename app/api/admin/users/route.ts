@@ -3,7 +3,13 @@ import { getServerSession } from 'next-auth';
 import { authOptions } from '@/lib/auth';
 import { prisma } from '@/lib/prisma';
 import bcrypt from 'bcryptjs';
-import { syncUserToFirebase } from '@/lib/firebaseSync';
+import {
+  findUserById,
+  findUserByEmail,
+  saveUser,
+  updateUser,
+  deleteUser,
+} from '@/lib/cloudStore';
 
 export const dynamic = 'force-dynamic';
 
@@ -13,7 +19,7 @@ export async function POST(request: Request) {
     const currentUserRole = (session?.user as any)?.role;
     const currentUserEmail = session?.user?.email;
 
-    const isSysAdmin = currentUserRole === 'SYSTEM_ADMIN' || currentUserEmail === 'admin' || currentUserEmail === 'admin@smartbbs.com';
+    const isSysAdmin = currentUserRole === 'SYSTEM_ADMIN' || currentUserEmail === 'admin' || currentUserEmail === 'admin@smartbbs.com' || currentUserEmail === 'creativeassociates17@gmail.com';
 
     if (!isSysAdmin) {
       return NextResponse.json({ error: 'Forbidden: Super Administrator access required' }, { status: 403 });
@@ -34,10 +40,7 @@ export async function POST(request: Request) {
 
       const cleanEmail = email.toLowerCase().trim();
 
-      const existingUser = await prisma.user.findFirst({
-        where: { email: cleanEmail },
-      });
-
+      const existingUser = await findUserByEmail(cleanEmail);
       if (existingUser) {
         return NextResponse.json({ error: 'A user with this login ID / email already exists' }, { status: 409 });
       }
@@ -72,25 +75,45 @@ export async function POST(request: Request) {
         isApproved = true;
       }
 
-      const newUser = await prisma.user.create({
-        data: {
-          name: name || cleanEmail,
-          email: cleanEmail,
-          passwordHash,
-          companyName: companyName || '',
-          phone: phone || '',
-          address: address || '',
-          role: role === 'SYSTEM_ADMIN' ? 'SYSTEM_ADMIN' : 'STANDARD_USER',
-          isApprovedByAdmin: isApproved,
-          subscriptionStatus,
-          planTier,
-          trialStartedAt: subscriptionStatus === 'TRIAL' ? now : null,
-          trialEndsAt: subscriptionStatus === 'TRIAL' ? expiresAt : null,
-          subscriptionExpiresAt: expiresAt,
-        },
+      const newUser = await saveUser({
+        name: name || cleanEmail,
+        email: cleanEmail,
+        passwordHash,
+        companyName: companyName || '',
+        phone: phone || '',
+        address: address || '',
+        role: role === 'SYSTEM_ADMIN' ? 'SYSTEM_ADMIN' : 'STANDARD_USER',
+        isApprovedByAdmin: isApproved,
+        subscriptionStatus,
+        planTier,
+        trialStartedAt: subscriptionStatus === 'TRIAL' ? now.toISOString() : null,
+        trialEndsAt: subscriptionStatus === 'TRIAL' && expiresAt ? expiresAt.toISOString() : null,
+        subscriptionExpiresAt: expiresAt ? expiresAt.toISOString() : null,
       });
 
-      await syncUserToFirebase(newUser);
+      // Dual-sync to local Prisma
+      try {
+        await prisma.user.create({
+          data: {
+            id: newUser.id,
+            name: newUser.name,
+            email: newUser.email,
+            passwordHash,
+            companyName: newUser.companyName,
+            phone: newUser.phone,
+            address: newUser.address,
+            role: newUser.role,
+            isApprovedByAdmin: newUser.isApprovedByAdmin,
+            subscriptionStatus: newUser.subscriptionStatus,
+            planTier: newUser.planTier,
+            trialStartedAt: subscriptionStatus === 'TRIAL' ? now : null,
+            trialEndsAt: subscriptionStatus === 'TRIAL' ? expiresAt : null,
+            subscriptionExpiresAt: expiresAt,
+          },
+        });
+      } catch (dbErr) {
+        console.warn('[Admin Create User] Prisma local cache warning:', dbErr);
+      }
 
       return NextResponse.json({
         success: true,
@@ -104,10 +127,7 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: 'User ID is required' }, { status: 400 });
     }
 
-    const targetUser = await prisma.user.findUnique({
-      where: { id: userId },
-    });
-
+    const targetUser = await findUserById(userId);
     if (!targetUser) {
       return NextResponse.json({ error: 'User not found' }, { status: 404 });
     }
@@ -129,8 +149,8 @@ export async function POST(request: Request) {
       if (email !== undefined) {
         const cleanEmail = email.toLowerCase().trim();
         if (cleanEmail !== targetUser.email) {
-          const duplicate = await prisma.user.findFirst({ where: { email: cleanEmail } });
-          if (duplicate) {
+          const duplicate = await findUserByEmail(cleanEmail);
+          if (duplicate && duplicate.id !== userId) {
             return NextResponse.json({ error: 'Another user already uses this login ID / email' }, { status: 409 });
           }
           updateData.email = cleanEmail;
@@ -146,19 +166,28 @@ export async function POST(request: Request) {
       }
 
       if (expiryDate !== undefined) {
-        updateData.subscriptionExpiresAt = expiryDate ? new Date(expiryDate) : null;
+        updateData.subscriptionExpiresAt = expiryDate ? new Date(expiryDate).toISOString() : null;
       }
 
-      const updated = await prisma.user.update({
-        where: { id: userId },
-        data: updateData,
-      });
+      const updated = await updateUser(userId, updateData);
 
-      await syncUserToFirebase(updated);
+      // Dual-sync to local Prisma
+      try {
+        const prismaUpdateData: any = { ...updateData };
+        if (prismaUpdateData.subscriptionExpiresAt) {
+          prismaUpdateData.subscriptionExpiresAt = new Date(prismaUpdateData.subscriptionExpiresAt);
+        }
+        await prisma.user.update({
+          where: { id: userId },
+          data: prismaUpdateData,
+        });
+      } catch (e) {
+        // ignore
+      }
 
       return NextResponse.json({
         success: true,
-        message: `User '${updated.email}' updated successfully`,
+        message: `User '${updated?.email || targetUser.email}' updated successfully`,
         user: updated,
       });
     }
@@ -167,19 +196,23 @@ export async function POST(request: Request) {
     // ACTION 3: SUSPEND_USER (Instant account suspension)
     // -------------------------------------------------------------
     if (action === 'SUSPEND_USER') {
-      const updated = await prisma.user.update({
-        where: { id: userId },
-        data: {
-          isApprovedByAdmin: false,
-          subscriptionStatus: 'SUSPENDED',
-        },
+      const updated = await updateUser(userId, {
+        isApprovedByAdmin: false,
+        subscriptionStatus: 'SUSPENDED',
       });
 
-      await syncUserToFirebase(updated);
+      try {
+        await prisma.user.update({
+          where: { id: userId },
+          data: { isApprovedByAdmin: false, subscriptionStatus: 'SUSPENDED' },
+        });
+      } catch (e) {
+        // ignore
+      }
 
       return NextResponse.json({
         success: true,
-        message: `User '${updated.email}' has been suspended`,
+        message: `User '${updated?.email || targetUser.email}' has been suspended`,
         user: updated,
       });
     }
@@ -188,19 +221,23 @@ export async function POST(request: Request) {
     // ACTION 3b: REJECT_USER (Reject registration request)
     // -------------------------------------------------------------
     if (action === 'REJECT_USER') {
-      const updated = await prisma.user.update({
-        where: { id: userId },
-        data: {
-          isApprovedByAdmin: false,
-          subscriptionStatus: 'REJECTED',
-        },
+      const updated = await updateUser(userId, {
+        isApprovedByAdmin: false,
+        subscriptionStatus: 'REJECTED',
       });
 
-      await syncUserToFirebase(updated);
+      try {
+        await prisma.user.update({
+          where: { id: userId },
+          data: { isApprovedByAdmin: false, subscriptionStatus: 'REJECTED' },
+        });
+      } catch (e) {
+        // ignore
+      }
 
       return NextResponse.json({
         success: true,
-        message: `Registration for user '${updated.email}' has been rejected`,
+        message: `Registration for user '${updated?.email || targetUser.email}' has been rejected`,
         user: updated,
       });
     }
@@ -232,27 +269,37 @@ export async function POST(request: Request) {
         expiresAt = new Date(now.getTime() + days * 24 * 60 * 60 * 1000);
         subscriptionStatus = 'ACTIVE';
       } else {
-        // Default: 30 days
         expiresAt = new Date(now.getTime() + 30 * 24 * 60 * 60 * 1000);
       }
 
-      const updated = await prisma.user.update({
-        where: { id: userId },
-        data: {
-          isApprovedByAdmin: true,
-          subscriptionStatus,
-          planTier,
-          trialStartedAt: subscriptionStatus === 'TRIAL' ? now : targetUser.trialStartedAt,
-          trialEndsAt: subscriptionStatus === 'TRIAL' ? expiresAt : targetUser.trialEndsAt,
-          subscriptionExpiresAt: expiresAt,
-        },
+      const updated = await updateUser(userId, {
+        isApprovedByAdmin: true,
+        subscriptionStatus,
+        planTier,
+        trialStartedAt: subscriptionStatus === 'TRIAL' ? now.toISOString() : targetUser.trialStartedAt,
+        trialEndsAt: subscriptionStatus === 'TRIAL' ? expiresAt.toISOString() : targetUser.trialEndsAt,
+        subscriptionExpiresAt: expiresAt.toISOString(),
       });
 
-      await syncUserToFirebase(updated);
+      try {
+        await prisma.user.update({
+          where: { id: userId },
+          data: {
+            isApprovedByAdmin: true,
+            subscriptionStatus,
+            planTier,
+            trialStartedAt: subscriptionStatus === 'TRIAL' ? now : (targetUser.trialStartedAt ? new Date(targetUser.trialStartedAt) : null),
+            trialEndsAt: subscriptionStatus === 'TRIAL' ? expiresAt : (targetUser.trialEndsAt ? new Date(targetUser.trialEndsAt) : null),
+            subscriptionExpiresAt: expiresAt,
+          },
+        });
+      } catch (e) {
+        // ignore
+      }
 
       return NextResponse.json({
         success: true,
-        message: `Subscription awarded to '${updated.email}'. Valid until ${expiresAt.toLocaleDateString()}.`,
+        message: `Subscription awarded to '${updated?.email || targetUser.email}'. Valid until ${expiresAt.toLocaleDateString()}.`,
         user: updated,
       });
     }
@@ -261,9 +308,13 @@ export async function POST(request: Request) {
     // ACTION 5: DELETE_USER (Permanently remove account)
     // -------------------------------------------------------------
     if (action === 'DELETE_USER') {
-      await prisma.user.delete({
-        where: { id: userId },
-      });
+      await deleteUser(userId);
+
+      try {
+        await prisma.user.delete({ where: { id: userId } });
+      } catch (e) {
+        // ignore
+      }
 
       return NextResponse.json({
         success: true,

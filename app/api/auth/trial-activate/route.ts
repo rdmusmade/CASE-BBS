@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server';
 import { getServerSession } from 'next-auth';
 import { authOptions } from '@/lib/auth';
 import { prisma } from '@/lib/prisma';
+import { findUserByEmail, findUserById, updateUser } from '@/lib/cloudStore';
 
 export async function POST(request: Request) {
   try {
@@ -11,9 +12,7 @@ export async function POST(request: Request) {
 
     const body = await request.json().catch(() => ({}));
     if (!userId && body.email) {
-      const foundUser = await prisma.user.findUnique({
-        where: { email: body.email.toLowerCase().trim() },
-      });
+      const foundUser = await findUserByEmail(body.email.toLowerCase().trim());
       if (foundUser) {
         userId = foundUser.id;
         userEmail = foundUser.email;
@@ -24,10 +23,7 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: 'Unauthorized. Please log in to activate trial.' }, { status: 401 });
     }
 
-    const user = await prisma.user.findUnique({
-      where: { id: userId },
-    });
-
+    const user = await findUserById(userId);
     if (!user) {
       return NextResponse.json({ error: 'User not found' }, { status: 404 });
     }
@@ -36,29 +32,42 @@ export async function POST(request: Request) {
     const now = new Date();
     const trialEnds = new Date(now.getTime() + 14 * 24 * 60 * 60 * 1000);
 
-    const updatedUser = await prisma.user.update({
-      where: { id: userId },
-      data: {
-        subscriptionStatus: 'TRIAL',
-        planTier: 'FREE_TRIAL',
-        isApprovedByAdmin: true,
-        trialStartedAt: now,
-        trialEndsAt: trialEnds,
-        subscriptionExpiresAt: trialEnds,
-      },
+    const updatedUser = await updateUser(userId, {
+      subscriptionStatus: 'TRIAL',
+      planTier: 'FREE_TRIAL',
+      isApprovedByAdmin: true,
+      trialStartedAt: now.toISOString(),
+      trialEndsAt: trialEnds.toISOString(),
+      subscriptionExpiresAt: trialEnds.toISOString(),
     });
+
+    try {
+      await prisma.user.update({
+        where: { id: userId },
+        data: {
+          subscriptionStatus: 'TRIAL',
+          planTier: 'FREE_TRIAL',
+          isApprovedByAdmin: true,
+          trialStartedAt: now,
+          trialEndsAt: trialEnds,
+          subscriptionExpiresAt: trialEnds,
+        },
+      });
+    } catch (e) {
+      // ignore
+    }
 
     return NextResponse.json({
       success: true,
-      message: '14-Day Free Trial activated successfully! You have full access to SmartBBS Pro.',
+      message: '14-Day Free Trial activated successfully! You have full access to CASE - BBS.',
       trialEndsAt: trialEnds.toISOString(),
       user: {
-        id: updatedUser.id,
-        email: updatedUser.email,
-        name: updatedUser.name,
-        isApprovedByAdmin: updatedUser.isApprovedByAdmin,
-        subscriptionStatus: updatedUser.subscriptionStatus,
-        planTier: updatedUser.planTier,
+        id: updatedUser?.id,
+        email: updatedUser?.email,
+        name: updatedUser?.name,
+        isApprovedByAdmin: updatedUser?.isApprovedByAdmin,
+        subscriptionStatus: updatedUser?.subscriptionStatus,
+        planTier: updatedUser?.planTier,
       },
     });
   } catch (error: any) {

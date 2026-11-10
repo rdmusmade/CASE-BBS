@@ -1,7 +1,7 @@
 import { NextResponse } from 'next/server';
 import bcrypt from 'bcryptjs';
 import { prisma } from '@/lib/prisma';
-import { syncUserToFirebase } from '@/lib/firebaseSync';
+import { findUserByEmail, saveUser } from '@/lib/cloudStore';
 
 export async function POST(request: Request) {
   try {
@@ -13,10 +13,8 @@ export async function POST(request: Request) {
 
     const cleanEmail = email.toLowerCase().trim();
 
-    const existingUser = await prisma.user.findUnique({
-      where: { email: cleanEmail },
-    });
-
+    // 1. Check existing user in Firestore cloud database
+    const existingUser = await findUserByEmail(cleanEmail);
     if (existingUser) {
       return NextResponse.json({ error: 'An account with this email already exists. Please log in.' }, { status: 409 });
     }
@@ -24,28 +22,48 @@ export async function POST(request: Request) {
     const salt = await bcrypt.genSalt(10);
     const passwordHash = await bcrypt.hash(password, salt);
 
-    const isSystemAdmin = cleanEmail === 'admin' || cleanEmail === 'admin@smartbbs.com';
+    const isSystemAdmin = cleanEmail === 'admin' || cleanEmail === 'admin@smartbbs.com' || cleanEmail === 'creativeassociates17@gmail.com';
 
-    const user = await prisma.user.create({
-      data: {
-        email: cleanEmail,
-        name: name || cleanEmail.split('@')[0],
-        companyName: companyName || '',
-        phone: phone || '',
-        address: address || '',
-        passwordHash,
-        role: isSystemAdmin ? 'SYSTEM_ADMIN' : 'STANDARD_USER',
-        isApprovedByAdmin: isSystemAdmin,
-        subscriptionStatus: isSystemAdmin ? 'ACTIVE' : 'PENDING',
-        planTier: isSystemAdmin ? 'ENTERPRISE' : 'FREE_TRIAL',
-        trialStartedAt: null,
-        trialEndsAt: null,
-        subscriptionExpiresAt: null,
-      },
+    // 2. Save directly to Firestore Cloud Database
+    const user = await saveUser({
+      email: cleanEmail,
+      name: name || cleanEmail.split('@')[0],
+      companyName: companyName || '',
+      phone: phone || '',
+      address: address || '',
+      passwordHash,
+      role: isSystemAdmin ? 'SYSTEM_ADMIN' : 'STANDARD_USER',
+      isApprovedByAdmin: isSystemAdmin,
+      subscriptionStatus: isSystemAdmin ? 'ACTIVE' : 'PENDING',
+      planTier: isSystemAdmin ? 'ENTERPRISE' : 'FREE_TRIAL',
+      trialStartedAt: null,
+      trialEndsAt: null,
+      subscriptionExpiresAt: null,
     });
 
-    // Auto-sync user to Firebase Firestore cloud database
-    await syncUserToFirebase(user);
+    // 3. Dual-sync to local Prisma SQLite if accessible
+    try {
+      await prisma.user.create({
+        data: {
+          id: user.id,
+          email: cleanEmail,
+          name: user.name,
+          companyName: user.companyName,
+          phone: user.phone,
+          address: user.address,
+          passwordHash,
+          role: user.role,
+          isApprovedByAdmin: user.isApprovedByAdmin,
+          subscriptionStatus: user.subscriptionStatus,
+          planTier: user.planTier,
+          trialStartedAt: null,
+          trialEndsAt: null,
+          subscriptionExpiresAt: null,
+        },
+      });
+    } catch (dbErr) {
+      console.warn('[Register] Prisma local cache sync warning:', dbErr);
+    }
 
     return NextResponse.json({
       success: true,

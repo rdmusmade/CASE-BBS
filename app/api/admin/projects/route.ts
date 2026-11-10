@@ -1,7 +1,7 @@
 import { NextResponse } from 'next/server';
 import { getServerSession } from 'next-auth';
 import { authOptions } from '@/lib/auth';
-import { prisma } from '@/lib/prisma';
+import { findProjects, findProjectById } from '@/lib/cloudStore';
 
 export const dynamic = 'force-dynamic';
 
@@ -21,18 +21,7 @@ export async function GET(request: Request) {
 
     if (projectId) {
       // Fetch specific project with all members and rebar items for inspection
-      const project = await prisma.project.findUnique({
-        where: { id: projectId },
-        include: {
-          user: { select: { name: true, email: true, companyName: true, phone: true } },
-          members: {
-            include: {
-              rebarItems: true,
-            },
-            orderBy: { createdAt: 'asc' },
-          },
-        },
-      });
+      const project = await findProjectById(projectId, '', true);
 
       if (!project) {
         return NextResponse.json({ error: 'Project not found' }, { status: 404 });
@@ -41,16 +30,15 @@ export async function GET(request: Request) {
       return NextResponse.json({ success: true, project });
     }
 
-    // Fetch all projects across all users
-    const projects = await prisma.project.findMany({
-      include: {
-        user: { select: { id: true, name: true, email: true, companyName: true, phone: true } },
-        _count: { select: { members: true } },
-      },
-      orderBy: { updatedAt: 'desc' },
-    });
+    // Fetch all projects across all users from Firestore Cloud Database
+    const projects = await findProjects('', true);
 
-    return NextResponse.json({ success: true, projects });
+    const formattedProjects = projects.map((p) => ({
+      ...p,
+      _count: { members: (p.members || []).length },
+    }));
+
+    return NextResponse.json({ success: true, projects: formattedProjects });
   } catch (error: any) {
     console.error('Error in admin projects API:', error);
     return NextResponse.json({ error: 'Failed to fetch admin projects' }, { status: 500 });

@@ -3,7 +3,7 @@ import CredentialsProvider from 'next-auth/providers/credentials';
 import GoogleProvider from 'next-auth/providers/google';
 import bcrypt from 'bcryptjs';
 import { prisma } from './prisma';
-import { getFirestoreDb } from './firebase';
+import { findUserByEmail, findUserById } from './cloudStore';
 
 export const authOptions: NextAuthOptions = {
   session: {
@@ -30,7 +30,7 @@ export const authOptions: NextAuthOptions = {
           credentials.password === '2484553644'
         ) {
           return {
-            id: 'admin',
+            id: 'cmw90khi20000l2c1k5g3euvv',
             email: 'admin',
             name: 'Creative Associate LLP',
             companyName: 'Creative Associate LLP',
@@ -46,31 +46,22 @@ export const authOptions: NextAuthOptions = {
           };
         }
 
-        // 2. Query Prisma database
-        let user: any = null;
-        try {
-          user = await prisma.user.findFirst({
-            where: {
-              OR: [
-                { email: lookup },
-                ...(lookup === 'admin' ? [{ email: 'admin' }, { email: 'creativeassociates17@gmail.com' }, { email: 'admin@smartbbs.com' }] : []),
-              ],
-            },
-          });
-        } catch (dbErr) {
-          console.warn('[Auth] Prisma lookup warning, checking cloud Firestore:', dbErr);
-        }
+        // 2. Query Firestore Cloud Database (Primary persistent source of truth)
+        let user: any = await findUserByEmail(lookup);
 
-        // 3. Fallback to Firebase Firestore cloud database
+        // 3. Fallback to Prisma SQLite database if Firestore was unreachable
         if (!user) {
           try {
-            const db = getFirestoreDb();
-            const snap = await db.collection('users').where('email', '==', lookup).limit(1).get();
-            if (!snap.empty) {
-              user = snap.docs[0].data();
-            }
-          } catch (fsErr) {
-            console.warn('[Auth] Firestore lookup warning:', fsErr);
+            user = await prisma.user.findFirst({
+              where: {
+                OR: [
+                  { email: lookup },
+                  ...(lookup === 'admin' ? [{ email: 'admin' }, { email: 'creativeassociates17@gmail.com' }, { email: 'admin@smartbbs.com' }] : []),
+                ],
+              },
+            });
+          } catch (dbErr) {
+            console.warn('[Auth] Prisma lookup warning:', dbErr);
           }
         }
 
@@ -162,30 +153,21 @@ export const authOptions: NextAuthOptions = {
         (session.user as any).trialEndsAt = token.trialEndsAt;
         (session.user as any).subscriptionExpiresAt = token.subscriptionExpiresAt;
 
-        // Fetch live DB user state to reflect Admin approvals/suspensions in real-time
+        // Fetch live Firestore user state to reflect Admin approvals/suspensions in real-time
         try {
           if (token.id) {
-            const liveUser = await prisma.user.findUnique({
-              where: { id: token.id as string },
-              select: {
-                role: true,
-                email: true,
-                isApprovedByAdmin: true,
-                subscriptionStatus: true,
-                planTier: true,
-                subscriptionExpiresAt: true,
-                trialEndsAt: true,
-                name: true,
-                companyName: true,
-                phone: true,
-                address: true,
-              },
-            });
+            let liveUser: any = await findUserById(token.id as string);
+            if (!liveUser) {
+              liveUser = await prisma.user.findUnique({
+                where: { id: token.id as string },
+              }).catch(() => null);
+            }
 
             if (liveUser) {
               const isSysAdmin = liveUser.role === 'SYSTEM_ADMIN' || liveUser.email === 'admin';
               const now = new Date();
-              const isExpired = !isSysAdmin && Boolean(liveUser.subscriptionExpiresAt && new Date(liveUser.subscriptionExpiresAt) < now);
+              const expiresDate = liveUser.subscriptionExpiresAt ? new Date(liveUser.subscriptionExpiresAt) : null;
+              const isExpired = !isSysAdmin && Boolean(expiresDate && expiresDate < now);
               const isSuspended = liveUser.subscriptionStatus === 'SUSPENDED';
               const isApproved = isSysAdmin || (liveUser.isApprovedByAdmin && !isSuspended && !isExpired);
 
@@ -203,8 +185,8 @@ export const authOptions: NextAuthOptions = {
               (session.user as any).isApprovedByAdmin = isApproved;
               (session.user as any).subscriptionStatus = effectiveStatus;
               (session.user as any).planTier = isSysAdmin ? 'ENTERPRISE' : liveUser.planTier;
-              (session.user as any).subscriptionExpiresAt = liveUser.subscriptionExpiresAt?.toISOString();
-              (session.user as any).trialEndsAt = liveUser.trialEndsAt?.toISOString();
+              (session.user as any).subscriptionExpiresAt = liveUser.subscriptionExpiresAt ? (typeof liveUser.subscriptionExpiresAt === 'string' ? liveUser.subscriptionExpiresAt : liveUser.subscriptionExpiresAt.toISOString()) : null;
+              (session.user as any).trialEndsAt = liveUser.trialEndsAt ? (typeof liveUser.trialEndsAt === 'string' ? liveUser.trialEndsAt : liveUser.trialEndsAt.toISOString()) : null;
               (session.user as any).name = liveUser.name;
               (session.user as any).companyName = liveUser.companyName;
               (session.user as any).phone = liveUser.phone;
