@@ -1,13 +1,13 @@
 import { calculateRebarShape, roundUpTo25mm, getUnitWeight } from '../is2502';
 
 export interface FootingInput {
-  memberTag: string; // e.g. "F1", "STEP-F2", "STRAP-F3", "COMB-F4", "RAFT-1", "PC-4P"
+  memberTag: string; // e.g. "FTG-01", "STEP-F2", "STRAP-01", "COMB-01", "RAFT-01", "PC-01"
   footingType?: 'ISOLATED' | 'STEPPED' | 'SLOPED_TRAPEZOIDAL' | 'STRAP' | 'COMBINED' | 'RAFT' | 'PILE_CAP';
   subType?: string;
   length: number; // mm (X-direction)
   width: number; // mm (Y-direction)
   depth: number; // mm (overall depth D)
-  clearCover?: number; // mm (default 50mm foundation cover)
+  clearCover?: number; // mm (default 50mm foundation cover per IS 456)
 
   // Stepped Footing specific
   stepLength2?: number; // mm (upper step)
@@ -16,12 +16,28 @@ export interface FootingInput {
   stepDepth2?: number; // mm (upper step depth)
 
   // Sloped / Trapezoidal Footing specific
-  edgeDepth?: number; // mm (edge thickness d_edge)
+  edgeDepth?: number; // mm (edge thickness d_edge, min 150mm per IS 456 Cl. 34.1.2)
   pedestalLength?: number; // mm
   pedestalWidth?: number; // mm
 
-  // Strap Footing specific
-  strapBeamLength?: number; // mm (distance between footings)
+  // Strap Footing specific (Footing 1 + Footing 2 + Strap Beam)
+  f1Length?: number;
+  f1Width?: number;
+  f1Depth?: number;
+  f1DiaX?: number;
+  f1SpacingX?: number;
+  f1DiaY?: number;
+  f1SpacingY?: number;
+
+  f2Length?: number;
+  f2Width?: number;
+  f2Depth?: number;
+  f2DiaX?: number;
+  f2SpacingX?: number;
+  f2DiaY?: number;
+  f2SpacingY?: number;
+
+  strapBeamLength?: number; // mm (distance / clear span between footings)
   strapBeamWidth?: number; // mm
   strapBeamDepth?: number; // mm
   strapTopDia?: number; // mm
@@ -31,23 +47,42 @@ export interface FootingInput {
   strapStirrupDia?: number; // mm
   strapStirrupSpacing?: number; // mm
 
-  // Pile Cap specific
-  pileCount?: 2 | 3 | 4 | 5 | 6 | 8;
-  pileDia?: number; // mm (e.g. 500mm)
-  pileSpacing?: number; // mm (e.g. 1500mm 3*pileDia)
+  // Combined Footing specific
+  col1WidthX?: number;
+  col1WidthY?: number;
+  col1Offset?: number; // mm from left edge
+  col2WidthX?: number;
+  col2WidthY?: number;
+  col2Offset?: number; // mm from right edge
+  colSpacing?: number; // mm center-to-center
+  colDowelDia?: number;
+  colDowelCount?: number;
+
+  // Pile Foundation & Pile Cap specific
+  pileCount?: number; // 1, 2, 3, 4, 5, 6
+  pileShape?: 'CIRCULAR' | 'RECTANGULAR';
+  pileDia?: number; // mm (diameter or side width)
+  pileLength?: number; // mm (depth of piles into ground)
+  pileVerticalDia?: number;
+  pileVerticalCount?: number;
+  pileSpiralDia?: number;
+  pileSpiralPitch?: number;
+  pileCapShape?: 'SQUARE' | 'RECTANGULAR' | 'TRIANGULAR' | 'CIRCULAR';
+  pileCapLength?: number;
+  pileCapWidth?: number;
+  pileCapDepth?: number;
 
   // Bottom Reinforcement
   bottomDiaX?: number; // mm
   bottomSpacingX?: number; // mm c/c
   bottomDiaY?: number; // mm
   bottomSpacingY?: number; // mm c/c
-  // For alternate naming
   bottomMeshXDia?: number;
   bottomMeshXSpacing?: number;
   bottomMeshYDia?: number;
   bottomMeshYSpacing?: number;
 
-  // Top Reinforcement (Raft / Combined / Pile Cap / Stepped)
+  // Top Reinforcement (Raft / Combined / Double Mat)
   hasTopMesh?: boolean;
   topDiaX?: number; // mm
   topSpacingX?: number; // mm
@@ -58,7 +93,7 @@ export interface FootingInput {
   topMeshYDia?: number;
   topMeshYSpacing?: number;
 
-  // Chairs for Rafts / Slabs / Heavy Footings
+  // Chairs for Rafts / Heavy Double Mats
   includeChairs?: boolean;
   chairDia?: number; // mm
   chairCount?: number;
@@ -109,7 +144,465 @@ export function generateFootingBBS(input: FootingInput): GeneratedRebarItem[] {
   const topDiaY = input.topDiaY || input.topMeshYDia || 12;
   const topSpacingY = input.topSpacingY || input.topMeshYSpacing || 200;
 
-  const bendUpHeight = Math.max(input.depth - 2 * cover, 150);
+  const isSloped = type.includes('SLOPED') || type.includes('TRAPEZOIDAL');
+  // IS 456 Cl. 34.1.2: edge thickness d_edge shall not be less than 150mm
+  const edgeDepth = Math.max(input.edgeDepth || 200, 150);
+  const bendUpHeight = isSloped
+    ? Math.max(edgeDepth - 2 * cover, 100)
+    : Math.max(input.depth - 2 * cover, 150);
+
+  // -------------------------------------------------------------
+  // 1. STRAP FOOTING (FOOTING 1 + FOOTING 2 + STRAP BEAM)
+  // -------------------------------------------------------------
+  if (type.includes('STRAP')) {
+    // Footing 1 (Trapezoidal / Rectangular)
+    const f1L = input.f1Length || input.length || 2000;
+    const f1W = input.f1Width || input.width || 2000;
+    const f1D = input.f1Depth || input.depth || 500;
+    const f1DiaX = input.f1DiaX || diaX;
+    const f1SpX = input.f1SpacingX || spacingX;
+    const f1DiaY = input.f1DiaY || diaY;
+    const f1SpY = input.f1SpacingY || spacingY;
+    const f1Bend = Math.max(f1D - 2 * cover, 150);
+
+    const f1SpanX = Math.max(f1L - 2 * cover, 100);
+    const f1CountX = Math.ceil(Math.max(f1W - 2 * cover, 100) / f1SpX) + 1;
+    const resF1X = calculateRebarShape({ shapeCode: '37', dia: f1DiaX, dimA: f1SpanX, dimB: f1Bend, steelGrade: grade });
+    const totF1X = (resF1X.cutLengthMm * f1CountX) / 1000;
+    const wtF1X = getUnitWeight(f1DiaX);
+
+    items.push({
+      barMark: `${input.memberTag}-F1-B1`,
+      description: `${input.memberTag} Footing 1 Bottom Main along Length (${f1SpanX}mm) @ ${f1SpX}mm c/c`,
+      shapeCode: '37',
+      dia: f1DiaX,
+      count: f1CountX,
+      dimA: f1SpanX,
+      dimB: f1Bend,
+      dimC: 0,
+      dimD: 0,
+      dimE: 0,
+      rawCutLength: resF1X.rawLengthMm,
+      calculatedCutLength: resF1X.cutLengthMm,
+      unitWeight: wtF1X,
+      totalLengthM: Number(totF1X.toFixed(2)),
+      totalWeightKg: Number((totF1X * wtF1X).toFixed(2)),
+      isPayable: true,
+      isChair: false,
+      isLap: false,
+      remarks: 'Footing 1 Bottom Mesh along Length',
+    });
+
+    const f1SpanY = Math.max(f1W - 2 * cover, 100);
+    const f1CountY = Math.ceil(Math.max(f1L - 2 * cover, 100) / f1SpY) + 1;
+    const resF1Y = calculateRebarShape({ shapeCode: '37', dia: f1DiaY, dimA: f1SpanY, dimB: f1Bend, steelGrade: grade });
+    const totF1Y = (resF1Y.cutLengthMm * f1CountY) / 1000;
+    const wtF1Y = getUnitWeight(f1DiaY);
+
+    items.push({
+      barMark: `${input.memberTag}-F1-B2`,
+      description: `${input.memberTag} Footing 1 Bottom Main along Width (${f1SpanY}mm) @ ${f1SpY}mm c/c`,
+      shapeCode: '37',
+      dia: f1DiaY,
+      count: f1CountY,
+      dimA: f1SpanY,
+      dimB: f1Bend,
+      dimC: 0,
+      dimD: 0,
+      dimE: 0,
+      rawCutLength: resF1Y.rawLengthMm,
+      calculatedCutLength: resF1Y.cutLengthMm,
+      unitWeight: wtF1Y,
+      totalLengthM: Number(totF1Y.toFixed(2)),
+      totalWeightKg: Number((totF1Y * wtF1Y).toFixed(2)),
+      isPayable: true,
+      isChair: false,
+      isLap: false,
+      remarks: 'Footing 1 Bottom Mesh along Width',
+    });
+
+    // Footing 2 (Trapezoidal / Rectangular)
+    const f2L = input.f2Length || input.length || 2400;
+    const f2W = input.f2Width || input.width || 2400;
+    const f2D = input.f2Depth || input.depth || 600;
+    const f2DiaX = input.f2DiaX || diaX;
+    const f2SpX = input.f2SpacingX || spacingX;
+    const f2DiaY = input.f2DiaY || diaY;
+    const f2SpY = input.f2SpacingY || spacingY;
+    const f2Bend = Math.max(f2D - 2 * cover, 150);
+
+    const f2SpanX = Math.max(f2L - 2 * cover, 100);
+    const f2CountX = Math.ceil(Math.max(f2W - 2 * cover, 100) / f2SpX) + 1;
+    const resF2X = calculateRebarShape({ shapeCode: '37', dia: f2DiaX, dimA: f2SpanX, dimB: f2Bend, steelGrade: grade });
+    const totF2X = (resF2X.cutLengthMm * f2CountX) / 1000;
+    const wtF2X = getUnitWeight(f2DiaX);
+
+    items.push({
+      barMark: `${input.memberTag}-F2-B1`,
+      description: `${input.memberTag} Footing 2 Bottom Main along Length (${f2SpanX}mm) @ ${f2SpX}mm c/c`,
+      shapeCode: '37',
+      dia: f2DiaX,
+      count: f2CountX,
+      dimA: f2SpanX,
+      dimB: f2Bend,
+      dimC: 0,
+      dimD: 0,
+      dimE: 0,
+      rawCutLength: resF2X.rawLengthMm,
+      calculatedCutLength: resF2X.cutLengthMm,
+      unitWeight: wtF2X,
+      totalLengthM: Number(totF2X.toFixed(2)),
+      totalWeightKg: Number((totF2X * wtF2X).toFixed(2)),
+      isPayable: true,
+      isChair: false,
+      isLap: false,
+      remarks: 'Footing 2 Bottom Mesh along Length',
+    });
+
+    const f2SpanY = Math.max(f2W - 2 * cover, 100);
+    const f2CountY = Math.ceil(Math.max(f2L - 2 * cover, 100) / f2SpY) + 1;
+    const resF2Y = calculateRebarShape({ shapeCode: '37', dia: f2DiaY, dimA: f2SpanY, dimB: f2Bend, steelGrade: grade });
+    const totF2Y = (resF2Y.cutLengthMm * f2CountY) / 1000;
+    const wtF2Y = getUnitWeight(f2DiaY);
+
+    items.push({
+      barMark: `${input.memberTag}-F2-B2`,
+      description: `${input.memberTag} Footing 2 Bottom Main along Width (${f2SpanY}mm) @ ${f2SpY}mm c/c`,
+      shapeCode: '37',
+      dia: f2DiaY,
+      count: f2CountY,
+      dimA: f2SpanY,
+      dimB: f2Bend,
+      dimC: 0,
+      dimD: 0,
+      dimE: 0,
+      rawCutLength: resF2Y.rawLengthMm,
+      calculatedCutLength: resF2Y.cutLengthMm,
+      unitWeight: wtF2Y,
+      totalLengthM: Number(totF2Y.toFixed(2)),
+      totalWeightKg: Number((totF2Y * wtF2Y).toFixed(2)),
+      isPayable: true,
+      isChair: false,
+      isLap: false,
+      remarks: 'Footing 2 Bottom Mesh along Width',
+    });
+
+    // Connecting Strap Beam
+    const sBLen = input.strapBeamLength || 3500;
+    const sBWid = input.strapBeamWidth || 350;
+    const sBDep = input.strapBeamDepth || 600;
+    const sTopCount = input.strapTopCount || 4;
+    const sTopDia = input.strapTopDia || 20;
+    const sBotCount = input.strapBottomCount || 3;
+    const sBotDia = input.strapBottomDia || 16;
+    const sStirrupDia = input.strapStirrupDia || 8;
+    const sStirrupSpacing = input.strapStirrupSpacing || 150;
+
+    // Strap Beam Total Length = clear span + embedment inside both footings
+    const sBTotalLength = sBLen + Math.min(f1L, 1000) + Math.min(f2L, 1000);
+
+    // Strap Beam Top Tension Bars
+    const resStrapTop = calculateRebarShape({
+      shapeCode: '21',
+      dia: sTopDia,
+      dimA: sBTotalLength,
+      dimB: sBDep - 2 * cover,
+      steelGrade: grade,
+    });
+    const totStrapTop = (resStrapTop.cutLengthMm * sTopCount) / 1000;
+    const wtStrapTop = getUnitWeight(sTopDia);
+    items.push({
+      barMark: `${input.memberTag}-STRAP-T1`,
+      description: `${input.memberTag} Connecting Strap Beam Top Main Tension Bars (${sTopCount} Nos Ø${sTopDia}mm)`,
+      shapeCode: '21',
+      dia: sTopDia,
+      count: sTopCount,
+      dimA: sBTotalLength,
+      dimB: sBDep - 2 * cover,
+      dimC: 0,
+      dimD: 0,
+      dimE: 0,
+      rawCutLength: resStrapTop.rawLengthMm,
+      calculatedCutLength: resStrapTop.cutLengthMm,
+      unitWeight: wtStrapTop,
+      totalLengthM: Number(totStrapTop.toFixed(2)),
+      totalWeightKg: Number((totStrapTop * wtStrapTop).toFixed(2)),
+      isPayable: true,
+      isChair: false,
+      isLap: false,
+      remarks: 'Strap beam hogging moment tension reinforcement anchored into both footings',
+    });
+
+    // Strap Beam Bottom Bars
+    const resStrapBot = calculateRebarShape({ shapeCode: '20', dia: sBotDia, dimA: sBTotalLength, steelGrade: grade });
+    const totStrapBot = (resStrapBot.cutLengthMm * sBotCount) / 1000;
+    const wtStrapBot = getUnitWeight(sBotDia);
+    items.push({
+      barMark: `${input.memberTag}-STRAP-B1`,
+      description: `${input.memberTag} Connecting Strap Beam Bottom Nominal Bars (${sBotCount} Nos Ø${sBotDia}mm)`,
+      shapeCode: '20',
+      dia: sBotDia,
+      count: sBotCount,
+      dimA: sBTotalLength,
+      dimB: 0,
+      dimC: 0,
+      dimD: 0,
+      dimE: 0,
+      rawCutLength: resStrapBot.rawLengthMm,
+      calculatedCutLength: resStrapBot.cutLengthMm,
+      unitWeight: wtStrapBot,
+      totalLengthM: Number(totStrapBot.toFixed(2)),
+      totalWeightKg: Number((totStrapBot * wtStrapBot).toFixed(2)),
+      isPayable: true,
+      isChair: false,
+      isLap: false,
+      remarks: 'Strap beam bottom compression nominal steel',
+    });
+
+    // Strap Beam Stirrups
+    const sA = sBWid - 2 * cover;
+    const sB = sBDep - 2 * cover;
+    const sStirrupCount = Math.ceil(sBTotalLength / sStirrupSpacing) + 1;
+    const resStrapStirrup = calculateRebarShape({ shapeCode: '51', dia: sStirrupDia, dimA: sA, dimB: sB, steelGrade: grade });
+    const totStrapStirrup = (resStrapStirrup.cutLengthMm * sStirrupCount) / 1000;
+    const wtStrapStirrup = getUnitWeight(sStirrupDia);
+    items.push({
+      barMark: `${input.memberTag}-STRAP-ST`,
+      description: `${input.memberTag} Connecting Strap Beam 135° Shear Stirrups (Ø${sStirrupDia}mm @ ${sStirrupSpacing}mm c/c)`,
+      shapeCode: '51',
+      dia: sStirrupDia,
+      count: sStirrupCount,
+      dimA: sA,
+      dimB: sB,
+      dimC: 0,
+      dimD: 0,
+      dimE: 0,
+      rawCutLength: resStrapStirrup.rawLengthMm,
+      calculatedCutLength: resStrapStirrup.cutLengthMm,
+      unitWeight: wtStrapStirrup,
+      totalLengthM: Number(totStrapStirrup.toFixed(2)),
+      totalWeightKg: Number((totStrapStirrup * wtStrapStirrup).toFixed(2)),
+      isPayable: true,
+      isChair: false,
+      isLap: false,
+      remarks: 'IS 13920 135° seismic closed stirrups for strap beam',
+    });
+
+    return items;
+  }
+
+  // -------------------------------------------------------------
+  // 2. PILE FOUNDATION & PILE CAP BBS
+  // -------------------------------------------------------------
+  if (type.includes('PILE')) {
+    const pCount = input.pileCount || 4;
+    const pShape = input.pileShape || 'CIRCULAR';
+    const pDia = input.pileDia || 500;
+    const pLen = input.pileLength || 10000; // 10m default depth
+    const pVertDia = input.pileVerticalDia || 16;
+    const pVertCount = input.pileVerticalCount || 6;
+    const pSpiralDia = input.pileSpiralDia || 8;
+    const pPitch = input.pileSpiralPitch || 150;
+
+    const capL = input.pileCapLength || input.length || 2400;
+    const capW = input.pileCapWidth || input.width || 2400;
+    const capD = input.pileCapDepth || input.depth || 800;
+
+    // Pile Cap Bottom Mat (Length X)
+    const capSpanX = Math.max(capL - 2 * cover, 100);
+    const capBend = Math.max(capD - 2 * cover, 150);
+    const capCountX = Math.ceil(Math.max(capW - 2 * cover, 100) / spacingX) + 1;
+    const resCapX = calculateRebarShape({ shapeCode: '37', dia: diaX, dimA: capSpanX, dimB: capBend, steelGrade: grade });
+    const totCapX = (resCapX.cutLengthMm * capCountX) / 1000;
+    const wtCapX = getUnitWeight(diaX);
+    items.push({
+      barMark: `${input.memberTag}-CAP-B1`,
+      description: `${input.memberTag} Pile Cap Bottom Mat along Length (${capSpanX}mm) @ ${spacingX}mm c/c`,
+      shapeCode: '37',
+      dia: diaX,
+      count: capCountX,
+      dimA: capSpanX,
+      dimB: capBend,
+      dimC: 0,
+      dimD: 0,
+      dimE: 0,
+      rawCutLength: resCapX.rawLengthMm,
+      calculatedCutLength: resCapX.cutLengthMm,
+      unitWeight: wtCapX,
+      totalLengthM: Number(totCapX.toFixed(2)),
+      totalWeightKg: Number((totCapX * wtCapX).toFixed(2)),
+      isPayable: true,
+      isChair: false,
+      isLap: false,
+      remarks: 'Pile cap heavy tension reinforcement',
+    });
+
+    // Pile Cap Bottom Mat (Width Y)
+    const capSpanY = Math.max(capW - 2 * cover, 100);
+    const capCountY = Math.ceil(Math.max(capL - 2 * cover, 100) / spacingY) + 1;
+    const resCapY = calculateRebarShape({ shapeCode: '37', dia: diaY, dimA: capSpanY, dimB: capBend, steelGrade: grade });
+    const totCapY = (resCapY.cutLengthMm * capCountY) / 1000;
+    const wtCapY = getUnitWeight(diaY);
+    items.push({
+      barMark: `${input.memberTag}-CAP-B2`,
+      description: `${input.memberTag} Pile Cap Bottom Mat along Width (${capSpanY}mm) @ ${spacingY}mm c/c`,
+      shapeCode: '37',
+      dia: diaY,
+      count: capCountY,
+      dimA: capSpanY,
+      dimB: capBend,
+      dimC: 0,
+      dimD: 0,
+      dimE: 0,
+      rawCutLength: resCapY.rawLengthMm,
+      calculatedCutLength: resCapY.cutLengthMm,
+      unitWeight: wtCapY,
+      totalLengthM: Number(totCapY.toFixed(2)),
+      totalWeightKg: Number((totCapY * wtCapY).toFixed(2)),
+      isPayable: true,
+      isChair: false,
+      isLap: false,
+      remarks: 'Pile cap transverse bottom reinforcement',
+    });
+
+    // Pile Cap Top Mesh (if present)
+    if (input.hasTopMesh) {
+      const topCountX = Math.ceil(Math.max(capW - 2 * cover, 100) / topSpacingX) + 1;
+      const resTopX = calculateRebarShape({ shapeCode: '37', dia: topDiaX, dimA: capSpanX, dimB: capBend, steelGrade: grade });
+      const totTopX = (resTopX.cutLengthMm * topCountX) / 1000;
+      const wtTopX = getUnitWeight(topDiaX);
+      items.push({
+        barMark: `${input.memberTag}-CAP-T1`,
+        description: `${input.memberTag} Pile Cap Top Mat along Length (${capSpanX}mm) @ ${topSpacingX}mm c/c`,
+        shapeCode: '37',
+        dia: topDiaX,
+        count: topCountX,
+        dimA: capSpanX,
+        dimB: capBend,
+        dimC: 0,
+        dimD: 0,
+        dimE: 0,
+        rawCutLength: resTopX.rawLengthMm,
+        calculatedCutLength: resTopX.cutLengthMm,
+        unitWeight: wtTopX,
+        totalLengthM: Number(totTopX.toFixed(2)),
+        totalWeightKg: Number((totTopX * wtTopX).toFixed(2)),
+        isPayable: true,
+        isChair: false,
+        isLap: false,
+        remarks: 'Pile cap top mesh',
+      });
+    }
+
+    // Piles Reinforcement (for all N piles)
+    // Vertical Main Bars with Cap Dowel L-Bend (50d or 600mm embedment into pile cap)
+    const pileDowelL = Math.max(capD - 2 * cover, 600);
+    const pileTotalVertLength = pLen + pileDowelL;
+    const resPileVert = calculateRebarShape({
+      shapeCode: '21',
+      dia: pVertDia,
+      dimA: pLen,
+      dimB: pileDowelL,
+      steelGrade: grade,
+    });
+    const totalVertBars = pCount * pVertCount;
+    const totPileVertM = (resPileVert.cutLengthMm * totalVertBars) / 1000;
+    const wtPileVert = getUnitWeight(pVertDia);
+    items.push({
+      barMark: `${input.memberTag}-PILE-V1`,
+      description: `${input.memberTag} Pile Vertical Longitudinal Bars (${pCount} Piles × ${pVertCount} Nos = ${totalVertBars} Nos Ø${pVertDia}mm)`,
+      shapeCode: '21',
+      dia: pVertDia,
+      count: totalVertBars,
+      dimA: pLen,
+      dimB: pileDowelL,
+      dimC: 0,
+      dimD: 0,
+      dimE: 0,
+      rawCutLength: resPileVert.rawLengthMm,
+      calculatedCutLength: resPileVert.cutLengthMm,
+      unitWeight: wtPileVert,
+      totalLengthM: Number(totPileVertM.toFixed(2)),
+      totalWeightKg: Number((totPileVertM * wtPileVert).toFixed(2)),
+      isPayable: true,
+      isChair: false,
+      isLap: false,
+      remarks: `Longitudinal cage anchored ${pileDowelL}mm into pile cap`,
+    });
+
+    // Piles Lateral Ties / Helical Spiral
+    if (pShape === 'CIRCULAR') {
+      const coreDia = pDia - 2 * cover;
+      const turns = Math.ceil(pLen / pPitch);
+      const resSpiral = calculateRebarShape({
+        shapeCode: '86',
+        dia: pSpiralDia,
+        dimA: coreDia,
+        dimB: pPitch,
+        dimC: pLen,
+        turns,
+        steelGrade: grade,
+      });
+      const totSpiralM = (resSpiral.cutLengthMm * pCount) / 1000;
+      const wtSpiral = getUnitWeight(pSpiralDia);
+      items.push({
+        barMark: `${input.memberTag}-PILE-SPIRAL`,
+        description: `${input.memberTag} Pile Helical Spiral Links (Ø${pSpiralDia}mm @ ${pPitch}mm pitch, ${pCount} Piles)`,
+        shapeCode: '86',
+        dia: pSpiralDia,
+        count: pCount,
+        dimA: coreDia,
+        dimB: pPitch,
+        dimC: pLen,
+        dimD: 0,
+        dimE: 0,
+        rawCutLength: resSpiral.rawLengthMm,
+        calculatedCutLength: resSpiral.cutLengthMm,
+        unitWeight: wtSpiral,
+        totalLengthM: Number(totSpiralM.toFixed(2)),
+        totalWeightKg: Number((totSpiralM * wtSpiral).toFixed(2)),
+        isPayable: true,
+        isChair: false,
+        isLap: false,
+        remarks: `Continuous helical spiral for ${pCount} circular bored piles`,
+      });
+    } else {
+      // Rectangular Pile Ties
+      const tieA = pDia - 2 * cover;
+      const tiesPerPile = Math.ceil(pLen / pPitch) + 1;
+      const totalTies = pCount * tiesPerPile;
+      const resTies = calculateRebarShape({ shapeCode: '51', dia: pSpiralDia, dimA: tieA, dimB: tieA, steelGrade: grade });
+      const totTiesM = (resTies.cutLengthMm * totalTies) / 1000;
+      const wtTies = getUnitWeight(pSpiralDia);
+      items.push({
+        barMark: `${input.memberTag}-PILE-TIE`,
+        description: `${input.memberTag} Rectangular Pile Closed Lateral Ties (Ø${pSpiralDia}mm @ ${pPitch}mm c/c)`,
+        shapeCode: '51',
+        dia: pSpiralDia,
+        count: totalTies,
+        dimA: tieA,
+        dimB: tieA,
+        dimC: 0,
+        dimD: 0,
+        dimE: 0,
+        rawCutLength: resTies.rawLengthMm,
+        calculatedCutLength: resTies.cutLengthMm,
+        unitWeight: wtTies,
+        totalLengthM: Number(totTiesM.toFixed(2)),
+        totalWeightKg: Number((totTiesM * wtTies).toFixed(2)),
+        isPayable: true,
+        isChair: false,
+        isLap: false,
+        remarks: 'Rectangular pile lateral confining ties',
+      });
+    }
+
+    return items;
+  }
+
+  // -------------------------------------------------------------
+  // 3. ISOLATED, STEPPED, SLOPED / TRAPEZOIDAL, COMBINED, RAFT
+  // -------------------------------------------------------------
 
   // 1. Primary Bottom Mesh Along Length (X direction)
   const spanX = Math.max(input.length - 2 * cover, 100);
@@ -218,102 +711,42 @@ export function generateFootingBBS(input: FootingInput): GeneratedRebarItem[] {
     });
   }
 
-  // 4. Strap Beam Rebar (if STRAP FOOTING)
-  if (type.includes('STRAP')) {
-    const sBLen = input.strapBeamLength || 4000;
-    const sBWid = input.strapBeamWidth || 350;
-    const sBDep = input.strapBeamDepth || 600;
-    const sTopCount = input.strapTopCount || 4;
-    const sTopDia = input.strapTopDia || 20;
-    const sBotCount = input.strapBottomCount || 3;
-    const sBotDia = input.strapBottomDia || 16;
-    const sStirrupDia = input.strapStirrupDia || 8;
-    const sStirrupSpacing = input.strapStirrupSpacing || 150;
+  // 4. Combined Footing Column Starter Dowels
+  if (type.includes('COMB')) {
+    const cDowelDia = input.colDowelDia || 16;
+    const cDowelCount = input.colDowelCount || 8; // 4 bars per column × 2 columns
+    const cDowelL = Math.max(input.depth - cover, 400);
+    const cDowelFoot = 300;
+    const resDowel = calculateRebarShape({ shapeCode: '21', dia: cDowelDia, dimA: cDowelL + 600, dimB: cDowelFoot, steelGrade: grade });
+    const totDowel = (resDowel.cutLengthMm * cDowelCount) / 1000;
+    const wtDowel = getUnitWeight(cDowelDia);
 
-    // Strap Beam Top Tension Bars
-    const resStrapTop = calculateRebarShape({ shapeCode: '21', dia: sTopDia, dimA: sBLen, dimB: sBDep - 2 * cover, steelGrade: grade });
-    const totStrapTop = (resStrapTop.cutLengthMm * sTopCount) / 1000;
-    const wtStrapTop = getUnitWeight(sTopDia);
     items.push({
-      barMark: `${input.memberTag}-STRAP-T1`,
-      description: `${input.memberTag} Strap Beam Top Main Tension Bars (${sTopCount} Nos)`,
+      barMark: `${input.memberTag}-COL-DOWEL`,
+      description: `${input.memberTag} Combined Footing Column Starter Dowels (${cDowelCount} Nos Ø${cDowelDia}mm for 2 Columns)`,
       shapeCode: '21',
-      dia: sTopDia,
-      count: sTopCount,
-      dimA: sBLen,
-      dimB: sBDep - 2 * cover,
+      dia: cDowelDia,
+      count: cDowelCount,
+      dimA: cDowelL + 600,
+      dimB: cDowelFoot,
       dimC: 0,
       dimD: 0,
       dimE: 0,
-      rawCutLength: resStrapTop.rawLengthMm,
-      calculatedCutLength: resStrapTop.cutLengthMm,
-      unitWeight: wtStrapTop,
-      totalLengthM: Number(totStrapTop.toFixed(2)),
-      totalWeightKg: Number((totStrapTop * wtStrapTop).toFixed(2)),
+      rawCutLength: resDowel.rawLengthMm,
+      calculatedCutLength: resDowel.cutLengthMm,
+      unitWeight: wtDowel,
+      totalLengthM: Number(totDowel.toFixed(2)),
+      totalWeightKg: Number((totDowel * wtDowel).toFixed(2)),
       isPayable: true,
       isChair: false,
       isLap: false,
-      remarks: 'Strap beam hogging moment tension reinforcement anchored into footings',
-    });
-
-    // Strap Beam Bottom Bars
-    const resStrapBot = calculateRebarShape({ shapeCode: '20', dia: sBotDia, dimA: sBLen, steelGrade: grade });
-    const totStrapBot = (resStrapBot.cutLengthMm * sBotCount) / 1000;
-    const wtStrapBot = getUnitWeight(sBotDia);
-    items.push({
-      barMark: `${input.memberTag}-STRAP-B1`,
-      description: `${input.memberTag} Strap Beam Bottom Nominal Bars (${sBotCount} Nos)`,
-      shapeCode: '20',
-      dia: sBotDia,
-      count: sBotCount,
-      dimA: sBLen,
-      dimB: 0,
-      dimC: 0,
-      dimD: 0,
-      dimE: 0,
-      rawCutLength: resStrapBot.rawLengthMm,
-      calculatedCutLength: resStrapBot.cutLengthMm,
-      unitWeight: wtStrapBot,
-      totalLengthM: Number(totStrapBot.toFixed(2)),
-      totalWeightKg: Number((totStrapBot * wtStrapBot).toFixed(2)),
-      isPayable: true,
-      isChair: false,
-      isLap: false,
-      remarks: 'Strap beam bottom compression steel',
-    });
-
-    // Strap Beam Stirrups
-    const sA = sBWid - 2 * cover;
-    const sB = sBDep - 2 * cover;
-    const sStirrupCount = Math.ceil(sBLen / sStirrupSpacing) + 1;
-    const resStrapStirrup = calculateRebarShape({ shapeCode: '51', dia: sStirrupDia, dimA: sA, dimB: sB, steelGrade: grade });
-    const totStrapStirrup = (resStrapStirrup.cutLengthMm * sStirrupCount) / 1000;
-    const wtStrapStirrup = getUnitWeight(sStirrupDia);
-    items.push({
-      barMark: `${input.memberTag}-STRAP-ST`,
-      description: `${input.memberTag} Strap Beam 135° Shear Stirrups @ ${sStirrupSpacing}mm c/c`,
-      shapeCode: '51',
-      dia: sStirrupDia,
-      count: sStirrupCount,
-      dimA: sA,
-      dimB: sB,
-      dimC: 0,
-      dimD: 0,
-      dimE: 0,
-      rawCutLength: resStrapStirrup.rawLengthMm,
-      calculatedCutLength: resStrapStirrup.cutLengthMm,
-      unitWeight: wtStrapStirrup,
-      totalLengthM: Number(totStrapStirrup.toFixed(2)),
-      totalWeightKg: Number((totStrapStirrup * wtStrapStirrup).toFixed(2)),
-      isPayable: true,
-      isChair: false,
-      isLap: false,
-      remarks: 'IS 13920 135° seismic closed stirrups for strap beam',
+      remarks: 'Column 1 and Column 2 starter bars anchored into combined footing',
     });
   }
 
-  // 5. Top Reinforcement (for Rafts, Combined Footings, Pile Caps)
-  const needsTopMesh = input.hasTopMesh || type.includes('RAFT') || type.includes('COMB') || type.includes('PILE');
+  // 5. Top Reinforcement (ONLY for Rafts, Combined Footings, or if user explicitly requested hasTopMesh)
+  // For trapezoidal/sloped footing, top reinforcement is strictly NOT needed per user requirement
+  const needsTopMesh = !isSloped && (input.hasTopMesh || type.includes('RAFT') || type.includes('COMB'));
   if (needsTopMesh) {
     const topCountX = Math.ceil(Math.max(input.width - 2 * cover, 100) / topSpacingX) + 1;
     const resTopX = calculateRebarShape({
@@ -383,8 +816,9 @@ export function generateFootingBBS(input: FootingInput): GeneratedRebarItem[] {
   }
 
   // 6. Raft / Foundation Spacer Chairs (3D Stand)
-  const hasChairs = input.includeChairs || input.chairCount || type.includes('RAFT') || type.includes('COMB');
-  if (hasChairs && (needsTopMesh || input.chairCount)) {
+  // Per user instruction: Spacer chairs MUST ONLY be included if necessary (when top mesh exists, e.g. Raft or Double Mat)
+  const hasChairs = needsTopMesh && (input.includeChairs || type.includes('RAFT') || input.chairCount);
+  if (hasChairs) {
     const cDia = input.chairDia || 12;
     const areaM2 = (input.length * input.width) / 1000000;
     const chairCount = input.chairCount || Math.max(Math.ceil(areaM2 * 1.0), 4); // 1 chair per m²

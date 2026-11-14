@@ -25,6 +25,7 @@ export async function POST(request: Request) {
       mbNumber: body.mbNumber || body.options?.mbNumber || 'MB-2026/PWD-042',
       date: body.date || body.options?.date || new Date().toLocaleDateString(),
       notes: body.notes || body.options?.notes || 'Follow IS 2502:1963 Table II bend tolerances & IS 13920 seismic ductile detailing.',
+      members: body.members || body.options?.members,
     };
 
     const doc = generateTechnicalBbsPdf(items, options);

@@ -21,12 +21,30 @@ export const STEEL_GRADES: Record<string, SteelGradeSpec> = {
 export const STANDARD_BAR_DIAMETERS = [6, 8, 10, 12, 16, 20, 25, 28, 32, 36, 40] as const;
 export type BarDia = typeof STANDARD_BAR_DIAMETERS[number];
 
+// Standard nominal weights per IS 1786:2008 Table 1
+export const IS1786_NOMINAL_WEIGHTS: Record<number, number> = {
+  6: 0.222,
+  8: 0.395,
+  10: 0.617,
+  12: 0.888,
+  16: 1.580,
+  20: 2.470,
+  25: 3.850,
+  28: 4.830,
+  32: 6.310,
+  36: 7.990,
+  40: 9.860,
+};
+
 /**
- * Calculates theoretical unit weight of rebar in kg/m according to IS 456 / IS 2502.
- * Formula: Weight (kg/m) = (dia^2) / 162.2
+ * Calculates theoretical unit weight of rebar in kg/m according to IS 456 / IS 2502 / IS 1786.
+ * Standard Formula: Weight (kg/m) = (dia^2) / 162.2
  */
-export function getUnitWeight(dia: number): number {
+export function getUnitWeight(dia: number, useNominalIS1786: boolean = false): number {
   if (dia <= 0) return 0;
+  if (useNominalIS1786 && IS1786_NOMINAL_WEIGHTS[dia]) {
+    return IS1786_NOMINAL_WEIGHTS[dia];
+  }
   const weight = (dia * dia) / 162.2;
   return Number(weight.toFixed(3));
 }
@@ -271,20 +289,30 @@ export function calculateRebarShape(input: ShapeCalculationInput): ShapeCalculat
       break;
     }
 
-    // Shape 86: Helical Spiral Column Rebar
+    // Shape 86: Helical Spiral Column Rebar (IS 456 Cl. 26.5.3.1 & IS 13920 Cl. 7.6.1)
     case '86':
     case 'SPIRAL': {
       const coreDia = dimA; // mm
       const pitch = input.pitch || dimB || 75; // mm
-      const height = dimC || 3000; // mm column clear height
-      const turns = input.turns || Math.ceil(height / pitch);
+      let turns = input.turns || 0;
+      if (!turns) {
+        if (dimC > 200) {
+          // dimC is column height in mm
+          turns = Math.ceil(dimC / pitch);
+        } else if (dimC > 0) {
+          // dimC is explicit number of turns
+          turns = dimC;
+        } else {
+          turns = Math.ceil(3000 / pitch);
+        }
+      }
       const circumference = Math.PI * coreDia;
-      // Formula: L = N * sqrt((pi*D_core)^2 + P^2) + 2*pi*D_core (anchorage 2 extra turns at top/bottom) + 2*L_tail
+      // Formula: L = N * sqrt((pi*D_core)^2 + P^2) + 3*pi*D_core (1.5 anchorage turns each top & bottom per IS 13920) + 2*L_tail
       const lengthPerTurn = Math.sqrt(Math.pow(circumference, 2) + Math.pow(pitch, 2));
-      const extraAnchorageTurns = 2 * circumference; // 1 extra turn each top & bottom
+      const extraAnchorageTurns = 3 * circumference; // 1.5 extra turns each top & bottom per IS 13920
       rawCutLength = turns * lengthPerTurn + extraAnchorageTurns + 2 * hookTail135;
       shapeName = 'IS 2502 Shape 86: Continuous Helical Spiral';
-      formulaDescription = `L = N*√( (πD)² + P² ) + 2πD + 2*Hook = ${turns}*${Number(lengthPerTurn.toFixed(1))} + ${Number(extraAnchorageTurns.toFixed(1))} + ${2 * hookTail135} = ${Number(rawCutLength.toFixed(1))} mm`;
+      formulaDescription = `L = N*√( (πD)² + P² ) + 3πD (Anchorage) + 2*Hook = ${turns}*${Number(lengthPerTurn.toFixed(1))} + ${Number(extraAnchorageTurns.toFixed(1))} + ${2 * hookTail135} = ${Number(rawCutLength.toFixed(1))} mm`;
       break;
     }
 

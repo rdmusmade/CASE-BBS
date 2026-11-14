@@ -2,6 +2,7 @@ import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
 import { GeneratedRebarItem } from '../engine/members/footing';
 import { STANDARD_BAR_DIAMETERS } from '../engine/is2502';
+import { normalizeRebarItem } from './technicalBbsPdfExport';
 
 export interface ShopPdfOptions {
   projectName: string;
@@ -15,9 +16,10 @@ export interface ShopPdfOptions {
  * Generates a shop-floor cut and bend instruction sheet PDF for site bar benders
  */
 export function generateShopFloorPdf(
-  items: GeneratedRebarItem[],
+  rawItems: GeneratedRebarItem[],
   options: ShopPdfOptions
 ): jsPDF {
+  const items = (rawItems || []).map(normalizeRebarItem);
   const doc = new jsPDF({
     orientation: 'portrait',
     unit: 'mm',
