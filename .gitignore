@@ -46,3 +46,7 @@ prisma/*.db-journal
 cloudflared.exe
 vercel-manifest.json
 
+
+# artifacts
+artifacts/
+

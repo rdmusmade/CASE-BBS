@@ -60,6 +60,26 @@ export function getScaledShapeDrawing(
     };
   }
 
+  // 1b. SHAPE 22: STRAIGHT BAR WITH 180° HOOK
+  if (code === '22') {
+    const y = height / 2;
+    const x1 = pad + 15;
+    const x2 = width - pad - 35;
+    const rHook = 14;
+    return {
+      svgPath: `M ${x1} ${y} L ${x2} ${y} A ${rHook} ${rHook} 0 0 0 ${x2} ${y - 2 * rHook} L ${x2 - 20} ${y - 2 * rHook}`,
+      viewBox: `0 0 ${width} ${height}`,
+      annotations: [
+        { text: `A = ${dimA} mm`, x: (x1 + x2) / 2, y: y + 20, anchor: 'middle', type: 'dimension' },
+        { text: `180° Hook (+9d to +13d)`, x: x2, y: y - 2 * rHook - 10, anchor: 'end', type: 'hook' },
+      ],
+      dimensionLines: [
+        { x1, y1: y + 8, x2, y2: y + 8, text: `A = ${dimA}`, axis: 'horizontal' },
+      ],
+      hookCallout: 'IS 2502 Shape 22 (180° Hook)',
+    };
+  }
+
   // 2. SHAPE 21: L-BAR (ONE 90° BEND)
   if (code === '21' || code === 'L_BAR' || code === 'L') {
     const normA = Math.max(dimA, 100);
@@ -279,6 +299,62 @@ export function getScaledShapeDrawing(
         { x1: cx - halfW, y1: cy + halfH + 8, x2: cx + halfW, y2: cy + halfH + 8, text: `A = ${dimA}`, axis: 'horizontal' },
       ],
       hookCallout: 'IS 13920 Internal Diamond Tie',
+    };
+  }
+
+  // 8b. SHAPE 71: 4-LEG / INTERNAL CROSS TIE (135° HOOKS)
+  if (code === '71' || code === 'INNER_TIE' || code === 'CROSS_TIE') {
+    const y = height / 2;
+    const x1 = pad + 35;
+    const x2 = width - pad - 35;
+    const hookLen = 24;
+    return {
+      svgPath: `M ${x1 - hookLen * 0.7} ${y - hookLen * 0.7} L ${x1} ${y} L ${x2} ${y} L ${x2 + hookLen * 0.7} ${y - hookLen * 0.7}`,
+      viewBox: `0 0 ${width} ${height}`,
+      annotations: [
+        { text: `Width A = ${dimA} mm`, x: width / 2, y: y + 22, anchor: 'middle', type: 'dimension' },
+        { text: `135° Hook (≥ 10d)`, x: x1, y: y - 18, anchor: 'start', type: 'hook' },
+        { text: `135° Hook (≥ 10d)`, x: x2, y: y - 18, anchor: 'end', type: 'hook' },
+        { text: `IS 13920 Internal Cross Link`, x: width / 2, y: y - 14, anchor: 'middle', type: 'note' },
+      ],
+      dimensionLines: [
+        { x1, y1: y + 10, x2, y2: y + 10, text: `A = ${dimA}`, axis: 'horizontal' },
+      ],
+      hookCallout: 'IS 13920 135° Seismic Cross Tie (Tail ≥ 10d)',
+      bendDeductionNote: `2 x 3d (135° bends) = ${6 * dia} mm`,
+    };
+  }
+
+  // 8c. SHAPE 86: CONTINUOUS HELICAL SPIRAL
+  if (code === '86' || code === 'SPIRAL') {
+    const cx = width / 2;
+    const cy = height / 2;
+    const rSpiral = 52;
+    const pitchVisual = 18;
+    const pathSegments: string[] = [];
+    const numWaves = 5;
+    const startX = cx - (numWaves * pitchVisual * 2) / 2;
+    for (let i = 0; i < numWaves; i++) {
+      const curX = startX + i * pitchVisual * 2;
+      if (i === 0) {
+        pathSegments.push(`M ${curX} ${cy - rSpiral}`);
+      }
+      pathSegments.push(`C ${curX + pitchVisual * 0.5} ${cy - rSpiral - 6}, ${curX + pitchVisual * 0.5} ${cy + rSpiral + 6}, ${curX + pitchVisual} ${cy + rSpiral}`);
+      pathSegments.push(`C ${curX + pitchVisual * 1.5} ${cy + rSpiral + 6}, ${curX + pitchVisual * 1.5} ${cy - rSpiral - 6}, ${curX + pitchVisual * 2} ${cy - rSpiral}`);
+    }
+    const svgPath = pathSegments.join(' ');
+    return {
+      svgPath,
+      viewBox: `0 0 ${width} ${height}`,
+      annotations: [
+        { text: `Core Dia D = ${dimA} mm`, x: cx, y: cy - rSpiral - 18, anchor: 'middle', type: 'dimension' },
+        { text: `Pitch P = ${dimB || 75} mm c/c`, x: cx, y: cy + rSpiral + 22, anchor: 'middle', type: 'dimension' },
+        { text: `IS 13920 Helical Spiral (+3 Extra Anchorage Turns)`, x: cx, y: height - 12, anchor: 'middle', type: 'note' },
+      ],
+      dimensionLines: [
+        { x1: startX, y1: cy - rSpiral - 8, x2: startX + 2 * pitchVisual, y2: cy - rSpiral - 8, text: `P = ${dimB || 75}`, axis: 'horizontal' },
+      ],
+      hookCallout: 'IS 13920 Continuous Helical Spiral',
     };
   }
 

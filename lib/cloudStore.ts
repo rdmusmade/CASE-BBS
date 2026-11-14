@@ -510,6 +510,8 @@ export async function addMemberToProject(
       dimE: Number(item.dimE) || 0,
       calculatedCutLength: Number(item.calculatedCutLength) || 0,
       unitWeight: Number(item.unitWeight) || (Number(item.dia) * Number(item.dia)) / 162.2,
+      totalLengthM: item.totalLengthM !== undefined ? Number(item.totalLengthM) : Number(((Number(item.count || 1) * (Number(item.calculatedCutLength) || 0)) / 1000).toFixed(2)),
+      totalWeightKg: item.totalWeightKg !== undefined ? Number(item.totalWeightKg) : Number((((Number(item.count || 1) * (Number(item.calculatedCutLength) || 0) * (Number(item.unitWeight) || (Number(item.dia) * Number(item.dia)) / 162.2)) / 1000)).toFixed(2)),
       isPayable: item.isPayable !== false,
       isChair: Boolean(item.isChair),
       isLap: Boolean(item.isLap),
