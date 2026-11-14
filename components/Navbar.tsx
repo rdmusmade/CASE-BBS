@@ -1,8 +1,8 @@
 'use client';
 
-import React from 'react';
+import React, { Suspense } from 'react';
 import Link from 'next/link';
-import { usePathname } from 'next/navigation';
+import { usePathname, useSearchParams } from 'next/navigation';
 import { useTheme, useAuth, safeSignOut } from './common/Providers';
 import {
   HardHat,
@@ -17,18 +17,29 @@ import {
   Ban,
   FolderKanban,
   CheckCircle2,
+  Layers,
+  BarChart3,
 } from 'lucide-react';
 
-export const Navbar: React.FC = () => {
+function NavbarContent() {
   const pathname = usePathname();
+  const searchParams = useSearchParams();
   const { user } = useAuth();
   const { theme, toggleTheme } = useTheme();
+
+  const currentTab = searchParams.get('tab');
 
   const isSystemAdmin =
     user?.role === 'SYSTEM_ADMIN' ||
     user?.email === 'admin' ||
     user?.email === 'admin@smartbbs.com' ||
     user?.email === 'creativeassociates17@gmail.com';
+
+  const handleAdminTabClick = (tab: 'USERS' | 'PROJECTS') => {
+    if (typeof window !== 'undefined') {
+      window.dispatchEvent(new CustomEvent('switch-admin-tab', { detail: tab }));
+    }
+  };
 
   // Calculate Renewal Days
   const getRenewalBadge = () => {
@@ -142,7 +153,7 @@ export const Navbar: React.FC = () => {
       </div>
 
       {/* ============================================================== */}
-      {/* TOP FIXED BAR 2: User Details • Days Remaining • Theme • Logout*/}
+      {/* TOP FIXED BAR 2: User Details • Days Remaining • Module Links • Theme • Logout */}
       {/* ============================================================== */}
       <div className="w-full bg-white/95 dark:bg-[#0a0f1d]/95 backdrop-blur-xl border-b border-slate-200/80 dark:border-slate-800/80 px-4 sm:px-6 lg:px-8 py-2.5 transition-colors">
         <div className="max-w-7xl mx-auto flex items-center justify-between gap-3">
@@ -176,29 +187,82 @@ export const Navbar: React.FC = () => {
             </div>
           </div>
 
-          {/* Right Side: Admin Shortcut Links, Theme Toggle & Logout */}
+          {/* Right Side: Navigation Buttons (Projects, Admin, Stocks) + Theme + Logout */}
           <div className="flex items-center gap-2 sm:gap-2.5">
-            {/* Admin Quick Module Switchers (Shown only to Admin) */}
+            {/* 1. ADMIN TOP BAR MODULES */}
             {isSystemAdmin && (
-              <div className="hidden sm:flex items-center gap-1.5 mr-1">
+              <div className="flex items-center gap-1.5 mr-1">
                 <Link
                   href="/admin"
-                  className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 ${
-                    pathname === '/admin'
-                      ? 'bg-amber-500 text-slate-950 shadow-md shadow-amber-500/20'
+                  onClick={() => handleAdminTabClick('USERS')}
+                  className={`px-2.5 sm:px-3 py-1.5 rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 ${
+                    pathname === '/admin' && currentTab !== 'projects'
+                      ? 'bg-amber-500 text-slate-950 font-black shadow-md shadow-amber-500/20'
                       : 'bg-slate-100 dark:bg-slate-800/80 text-slate-700 dark:text-slate-300 hover:text-amber-500 border border-slate-200 dark:border-slate-700/60'
                   }`}
+                  title="Super Admin User Governance & Approvals"
                 >
                   <Shield className="w-3.5 h-3.5" />
-                  <span>Admin Console</span>
+                  <span className="hidden sm:inline">Admin Console</span>
+                  <span className="sm:hidden">Admin</span>
                 </Link>
 
                 <Link
                   href="/admin?tab=projects"
-                  className="px-3 py-1.5 rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 bg-slate-100 dark:bg-slate-800/80 text-slate-700 dark:text-slate-300 hover:text-amber-500 border border-slate-200 dark:border-slate-700/60"
+                  onClick={() => handleAdminTabClick('PROJECTS')}
+                  className={`px-2.5 sm:px-3 py-1.5 rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 ${
+                    pathname === '/admin' && currentTab === 'projects'
+                      ? 'bg-amber-500 text-slate-950 font-black shadow-md shadow-amber-500/20'
+                      : 'bg-slate-100 dark:bg-slate-800/80 text-slate-700 dark:text-slate-300 hover:text-amber-500 border border-slate-200 dark:border-slate-700/60'
+                  }`}
+                  title="Inspect All User BBS Projects"
                 >
                   <FolderKanban className="w-3.5 h-3.5" />
                   <span>Projects</span>
+                </Link>
+
+                <Link
+                  href="/dashboard"
+                  className={`hidden md:flex px-2.5 py-1.5 rounded-xl text-xs font-bold transition-all items-center gap-1.5 ${
+                    pathname === '/dashboard'
+                      ? 'bg-sky-500 text-slate-950 font-black shadow-md shadow-sky-500/20'
+                      : 'bg-slate-100 dark:bg-slate-800/80 text-slate-700 dark:text-slate-300 hover:text-sky-500 border border-slate-200 dark:border-slate-700/60'
+                  }`}
+                  title="Open BBS Engineering Calculation Workspace"
+                >
+                  <Layers className="w-3.5 h-3.5" />
+                  <span>BBS Workspace</span>
+                </Link>
+              </div>
+            )}
+
+            {/* 2. STANDARD USER TOP BAR MODULES */}
+            {!isSystemAdmin && user && (
+              <div className="flex items-center gap-1.5 mr-1">
+                <Link
+                  href="/dashboard"
+                  className={`px-2.5 sm:px-3 py-1.5 rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 ${
+                    pathname === '/dashboard'
+                      ? 'bg-sky-500 text-slate-950 font-black shadow-md shadow-sky-500/20'
+                      : 'bg-slate-100 dark:bg-slate-800/80 text-slate-700 dark:text-slate-300 hover:text-sky-500 border border-slate-200 dark:border-slate-700/60'
+                  }`}
+                  title="Your Structural Projects & BBS Overview"
+                >
+                  <FolderKanban className="w-3.5 h-3.5" />
+                  <span>Projects</span>
+                </Link>
+
+                <Link
+                  href="/stocks"
+                  className={`hidden sm:flex px-2.5 sm:px-3 py-1.5 rounded-xl text-xs font-bold transition-all items-center gap-1.5 ${
+                    pathname === '/stocks'
+                      ? 'bg-emerald-500 text-slate-950 font-black shadow-md shadow-emerald-500/20'
+                      : 'bg-slate-100 dark:bg-slate-800/80 text-slate-700 dark:text-slate-300 hover:text-emerald-500 border border-slate-200 dark:border-slate-700/60'
+                  }`}
+                  title="Steel Stocks Reconciliation Matrix"
+                >
+                  <BarChart3 className="w-3.5 h-3.5" />
+                  <span>Stocks</span>
                 </Link>
               </div>
             )}
@@ -229,5 +293,19 @@ export const Navbar: React.FC = () => {
         </div>
       </div>
     </header>
+  );
+}
+
+export const Navbar: React.FC = () => {
+  return (
+    <Suspense
+      fallback={
+        <header className="sticky top-0 z-40 w-full h-20 bg-slate-900 flex items-center px-6">
+          <div className="text-white text-xs font-bold">CASE - BBS</div>
+        </header>
+      }
+    >
+      <NavbarContent />
+    </Suspense>
   );
 };

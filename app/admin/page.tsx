@@ -43,6 +43,28 @@ function AdminContent() {
     tabParam === 'projects' ? 'PROJECTS' : 'USERS'
   );
 
+  const handleTabSwitch = (newTab: 'USERS' | 'PROJECTS') => {
+    setActiveTab(newTab);
+    if (typeof window !== 'undefined') {
+      const url = new URL(window.location.href);
+      if (newTab === 'PROJECTS') {
+        url.searchParams.set('tab', 'projects');
+      } else {
+        url.searchParams.delete('tab');
+      }
+      window.history.replaceState({}, '', url.toString());
+    }
+  };
+
+  useEffect(() => {
+    const handleSwitch = (e: any) => {
+      if (e.detail === 'PROJECTS') handleTabSwitch('PROJECTS');
+      if (e.detail === 'USERS') handleTabSwitch('USERS');
+    };
+    window.addEventListener('switch-admin-tab', handleSwitch);
+    return () => window.removeEventListener('switch-admin-tab', handleSwitch);
+  }, []);
+
   useEffect(() => {
     if (tabParam === 'projects') {
       setActiveTab('PROJECTS');
@@ -672,7 +694,7 @@ function AdminContent() {
             {/* Two Primary Admin Modules: 1. "Admin Console" vs 2. "Projects" */}
             <div className="flex items-center gap-2 border-b border-slate-200 dark:border-slate-800 pb-2">
               <button
-                onClick={() => setActiveTab('USERS')}
+                onClick={() => handleTabSwitch('USERS')}
                 className={`px-4 py-2.5 rounded-xl text-xs font-bold transition-all flex items-center gap-2 ${
                   activeTab === 'USERS'
                     ? 'bg-amber-500 text-slate-950 font-black shadow-md shadow-amber-500/20'
@@ -684,7 +706,7 @@ function AdminContent() {
               </button>
 
               <button
-                onClick={() => setActiveTab('PROJECTS')}
+                onClick={() => handleTabSwitch('PROJECTS')}
                 className={`px-4 py-2.5 rounded-xl text-xs font-bold transition-all flex items-center gap-2 ${
                   activeTab === 'PROJECTS'
                     ? 'bg-amber-500 text-slate-950 font-black shadow-md shadow-amber-500/20'

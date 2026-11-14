@@ -122,14 +122,76 @@ export const authOptions: NextAuthOptions = {
         token.planTier = (user as any).planTier || 'FREE_TRIAL';
         token.trialEndsAt = (user as any).trialEndsAt;
         token.subscriptionExpiresAt = (user as any).subscriptionExpiresAt;
+        token.name = user.name;
         token.lastChecked = Date.now();
       }
+
+      // Live Firestore synchronization for standard users in JWT callback:
+      // When Admin approves or awards a subscription, the token & cookie update automatically!
+      const nowMs = Date.now();
+      const isPendingOrUnapproved = token.subscriptionStatus === 'PENDING' || !token.isApprovedByAdmin;
+      const needsSync =
+        token.id &&
+        token.id !== 'cmw90khi20000l2c1k5g3euvv' &&
+        (!token.lastChecked || isPendingOrUnapproved || (nowMs - (token.lastChecked as number)) > 15000);
+
+      if (needsSync) {
+        try {
+          const liveUser: any = await findUserById(token.id as string);
+          token.lastChecked = nowMs;
+
+          if (liveUser) {
+            const isSysAdmin = liveUser.role === 'SYSTEM_ADMIN' || liveUser.email === 'admin';
+            const now = new Date();
+            const expiresDate = liveUser.subscriptionExpiresAt ? new Date(liveUser.subscriptionExpiresAt) : null;
+            const isExpired = !isSysAdmin && Boolean(expiresDate && expiresDate < now);
+            const isSuspended = liveUser.subscriptionStatus === 'SUSPENDED';
+            const isApproved = isSysAdmin || (liveUser.isApprovedByAdmin && !isSuspended && !isExpired);
+
+            const effectiveStatus = isSysAdmin
+              ? 'ACTIVE'
+              : isSuspended
+              ? 'SUSPENDED'
+              : isExpired
+              ? 'EXPIRED'
+              : isApproved
+              ? liveUser.subscriptionStatus
+              : 'PENDING';
+
+            token.role = isSysAdmin ? 'SYSTEM_ADMIN' : liveUser.role;
+            token.isApprovedByAdmin = isApproved;
+            token.subscriptionStatus = effectiveStatus;
+            token.planTier = isSysAdmin ? 'ENTERPRISE' : liveUser.planTier;
+            token.subscriptionExpiresAt = liveUser.subscriptionExpiresAt
+              ? (typeof liveUser.subscriptionExpiresAt === 'string'
+                  ? liveUser.subscriptionExpiresAt
+                  : liveUser.subscriptionExpiresAt.toISOString())
+              : null;
+            token.trialEndsAt = liveUser.trialEndsAt
+              ? (typeof liveUser.trialEndsAt === 'string'
+                  ? liveUser.trialEndsAt
+                  : liveUser.trialEndsAt.toISOString())
+              : null;
+            token.name = liveUser.name;
+            token.companyName = liveUser.companyName;
+            token.phone = liveUser.phone;
+            token.address = liveUser.address;
+          } else {
+            // Deleted user
+            token.isApprovedByAdmin = false;
+            token.subscriptionStatus = 'REJECTED';
+          }
+        } catch (err) {
+          console.warn('[JWT Sync] Live check error:', err);
+        }
+      }
+
       if (trigger === 'update' && session) {
         if (session.planTier) token.planTier = session.planTier;
         if (session.subscriptionStatus) token.subscriptionStatus = session.subscriptionStatus;
         if (session.isApprovedByAdmin !== undefined) token.isApprovedByAdmin = session.isApprovedByAdmin;
         if (session.subscriptionExpiresAt !== undefined) token.subscriptionExpiresAt = session.subscriptionExpiresAt;
-        token.lastChecked = 0; // force immediate re-check
+        token.lastChecked = 0;
       }
       return token;
     },
@@ -145,53 +207,7 @@ export const authOptions: NextAuthOptions = {
         (session.user as any).planTier = token.planTier;
         (session.user as any).trialEndsAt = token.trialEndsAt;
         (session.user as any).subscriptionExpiresAt = token.subscriptionExpiresAt;
-
-        // Periodic live Firestore check (every 30s) or on update to reflect Admin changes
-        const nowMs = Date.now();
-        const shouldRefresh = !token.lastChecked || (nowMs - (token.lastChecked as number)) > 30000;
-
-        if (token.id && token.id !== 'cmw90khi20000l2c1k5g3euvv' && shouldRefresh) {
-          try {
-            const liveUser: any = await findUserById(token.id as string);
-            token.lastChecked = nowMs;
-
-            if (liveUser) {
-              const isSysAdmin = liveUser.role === 'SYSTEM_ADMIN' || liveUser.email === 'admin';
-              const now = new Date();
-              const expiresDate = liveUser.subscriptionExpiresAt ? new Date(liveUser.subscriptionExpiresAt) : null;
-              const isExpired = !isSysAdmin && Boolean(expiresDate && expiresDate < now);
-              const isSuspended = liveUser.subscriptionStatus === 'SUSPENDED';
-              const isApproved = isSysAdmin || (liveUser.isApprovedByAdmin && !isSuspended && !isExpired);
-
-              const effectiveStatus = isSysAdmin
-                ? 'ACTIVE'
-                : isSuspended
-                ? 'SUSPENDED'
-                : isExpired
-                ? 'EXPIRED'
-                : isApproved
-                ? liveUser.subscriptionStatus
-                : 'PENDING';
-
-              (session.user as any).role = isSysAdmin ? 'SYSTEM_ADMIN' : liveUser.role;
-              (session.user as any).isApprovedByAdmin = isApproved;
-              (session.user as any).subscriptionStatus = effectiveStatus;
-              (session.user as any).planTier = isSysAdmin ? 'ENTERPRISE' : liveUser.planTier;
-              (session.user as any).subscriptionExpiresAt = liveUser.subscriptionExpiresAt ? (typeof liveUser.subscriptionExpiresAt === 'string' ? liveUser.subscriptionExpiresAt : liveUser.subscriptionExpiresAt.toISOString()) : null;
-              (session.user as any).trialEndsAt = liveUser.trialEndsAt ? (typeof liveUser.trialEndsAt === 'string' ? liveUser.trialEndsAt : liveUser.trialEndsAt.toISOString()) : null;
-              (session.user as any).name = liveUser.name;
-              (session.user as any).companyName = liveUser.companyName;
-              (session.user as any).phone = liveUser.phone;
-              (session.user as any).address = liveUser.address;
-            } else {
-              // User has been deleted by admin: invalidate session immediately
-              (session.user as any).subscriptionStatus = 'SUSPENDED';
-              (session.user as any).isApprovedByAdmin = false;
-            }
-          } catch (e) {
-            // fallback to token if db lookup fails
-          }
-        }
+        session.user.name = (token.name as string) || session.user.name;
       }
       return session;
     },

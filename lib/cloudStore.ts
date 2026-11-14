@@ -18,6 +18,7 @@ export interface CloudUser {
   subscriptionExpiresAt?: string | null;
   createdAt: string;
   updatedAt: string;
+  aliases?: string[];
 }
 
 export interface CloudProject {
@@ -115,26 +116,48 @@ export async function findUserByEmail(email: string): Promise<CloudUser | null> 
       }
     }
 
-    // 2. Direct email search (single fast round-trip)
-    if (clean.includes('@')) {
-      const snap = await db.collection('users').where('email', '==', clean).limit(1).get();
-      if (!snap.empty) {
-        const d = snap.docs[0];
-        return { id: d.id, ...d.data() } as CloudUser;
-      }
-      return null;
-    }
-
-    // 3. Username or ID search
+    // 2. Direct document ID lookup
     const directDoc = await db.collection('users').doc(clean).get();
     if (directDoc.exists) {
       return { id: directDoc.id, ...directDoc.data() } as CloudUser;
     }
 
+    // 3. Exact email search (primary fastpath)
     const snap = await db.collection('users').where('email', '==', clean).limit(1).get();
     if (!snap.empty) {
       const d = snap.docs[0];
       return { id: d.id, ...d.data() } as CloudUser;
+    }
+
+    // 4. Aliases array search (handles login by username, email prefix, phone)
+    const aliasSnap = await db.collection('users').where('aliases', 'array-contains', clean).limit(1).get();
+    if (!aliasSnap.empty) {
+      const d = aliasSnap.docs[0];
+      return { id: d.id, ...d.data() } as CloudUser;
+    }
+
+    // 5. Prefix search for username without '@' (e.g. 'rdmusmade' -> 'rdmusmade@gmail.com')
+    if (!clean.includes('@')) {
+      const prefixSnap = await db
+        .collection('users')
+        .where('email', '>=', clean + '@')
+        .where('email', '<=', clean + '@\uf8ff')
+        .limit(1)
+        .get();
+      if (!prefixSnap.empty) {
+        const d = prefixSnap.docs[0];
+        return { id: d.id, ...d.data() } as CloudUser;
+      }
+
+      // Also try phone digits search if clean has numbers
+      const phoneDigits = clean.replace(/\D/g, '');
+      if (phoneDigits.length >= 8) {
+        const phoneSnap = await db.collection('users').where('aliases', 'array-contains', phoneDigits).limit(1).get();
+        if (!phoneSnap.empty) {
+          const d = phoneSnap.docs[0];
+          return { id: d.id, ...d.data() } as CloudUser;
+        }
+      }
     }
 
     return null;
@@ -151,6 +174,16 @@ export async function saveUser(user: Partial<CloudUser> & { email: string }): Pr
   const now = new Date().toISOString();
   const id = user.id || generateId();
   const cleanEmail = user.email.toLowerCase().trim();
+  const phoneClean = (user.phone || '').replace(/\D/g, '');
+  const aliases = Array.from(
+    new Set([
+      cleanEmail,
+      cleanEmail.split('@')[0],
+      id,
+      ...(user.phone ? [user.phone.trim()] : []),
+      ...(phoneClean.length >= 8 ? [phoneClean] : []),
+    ])
+  );
 
   const fullUser: CloudUser = {
     id,
@@ -169,6 +202,7 @@ export async function saveUser(user: Partial<CloudUser> & { email: string }): Pr
     subscriptionExpiresAt: user.subscriptionExpiresAt || null,
     createdAt: user.createdAt || now,
     updatedAt: now,
+    aliases,
   };
 
   await db.collection('users').doc(id).set(fullUser, { merge: true });
@@ -180,7 +214,24 @@ export async function updateUser(id: string, updates: Partial<CloudUser>): Promi
   if (!db) return null;
 
   const now = new Date().toISOString();
-  const dataToUpdate = { ...updates, updatedAt: now };
+  const dataToUpdate: any = { ...updates, updatedAt: now };
+
+  if (updates.email || updates.phone) {
+    const existing = await findUserById(id);
+    const emailToUse = (updates.email || existing?.email || '').toLowerCase().trim();
+    const phoneToUse = (updates.phone !== undefined ? updates.phone : existing?.phone) || '';
+    const phoneClean = phoneToUse.replace(/\D/g, '');
+
+    dataToUpdate.aliases = Array.from(
+      new Set([
+        emailToUse,
+        emailToUse.split('@')[0],
+        id,
+        ...(phoneToUse ? [phoneToUse.trim()] : []),
+        ...(phoneClean.length >= 8 ? [phoneClean] : []),
+      ])
+    );
+  }
 
   await db.collection('users').doc(id).set(dataToUpdate, { merge: true });
   return findUserById(id);
